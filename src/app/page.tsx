@@ -1,17 +1,25 @@
 "use client";
 
 import { useState } from "react";
-import type { CalibrationData } from "@/types/wave";
+import type { CalibrationData, WaveDataPoint } from "@/types/wave";
 import VideoUploader from "@/components/VideoUploader";
 import CalibrationCanvas from "@/components/CalibrationCanvas";
+import ProcessingPanel from "@/components/ProcessingPanel";
 
 export default function Home() {
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [calibration, setCalibration] = useState<CalibrationData | null>(null);
+  const [waveData, setWaveData] = useState<WaveDataPoint[] | null>(null);
 
   function handleVideoLoaded(url: string) {
     setVideoUrl(url);
     setCalibration(null);
+    setWaveData(null);
+  }
+
+  function handleCalibrated(data: CalibrationData) {
+    setCalibration(data);
+    setWaveData(null);
   }
 
   return (
@@ -34,15 +42,27 @@ export default function Home() {
         {videoUrl && (
           <section className="flex flex-col gap-3">
             <StepLabel step={2} title="Calibrate against a known distance" />
-            <CalibrationCanvas videoUrl={videoUrl} onCalibrated={setCalibration} />
+            <CalibrationCanvas videoUrl={videoUrl} onCalibrated={handleCalibrated} />
           </section>
         )}
 
-        {calibration && (
+        {videoUrl && calibration && (
+          <section className="flex flex-col gap-3">
+            <StepLabel step={3} title="Configure and run processing" />
+            <ProcessingPanel
+              videoUrl={videoUrl}
+              calibration={calibration}
+              onComplete={setWaveData}
+            />
+          </section>
+        )}
+
+        {waveData && (
           <section className="flex flex-col gap-2 rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
-            <StepLabel step={3} title="Calibration complete" />
+            <StepLabel step={4} title="Results" />
             <p className="text-sm text-zinc-600 dark:text-zinc-400">
-              {calibration.pixelsPerCm.toFixed(3)} pixels/cm — ready for the next step.
+              {waveData.length} data points ready — charts and statistics coming in
+              the next phase.
             </p>
           </section>
         )}
