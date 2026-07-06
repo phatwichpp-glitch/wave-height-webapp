@@ -1,36 +1,73 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Wave Height Web App
+
+A browser-based tool for analyzing water wave height from video, entirely client-side
+(no server upload needed — video processing runs in the browser, optionally offloaded
+to a Web Worker). This is a Next.js companion to the Python `wave_height_analyzer`
+CLI/library, aimed at giving the same calibration → surface detection → statistics
+pipeline a shareable web UI.
+
+> Under active development. Functionality is being built out in phases; this scaffold
+> currently has the project structure, shared types, and test setup in place.
+
+## Tech Stack
+
+- **Next.js** (App Router, TypeScript, Tailwind CSS, ESLint)
+- **Recharts** for plotting wave elevation / statistics
+- **Vitest** for testing, with two environments:
+  - `node` — for pure logic (`src/lib/**`, `src/types/**`, `src/workers/**`)
+  - `jsdom` — for component tests (`src/components/**`, `src/app/**`)
+
+## Project Structure
+
+```
+wave-height-webapp/
+├── src/
+│   ├── app/                    # Next.js App Router pages/layout
+│   ├── lib/                    # Pure logic: calibration, detection, pipeline, stats, CSV export
+│   ├── workers/                # Web Worker for off-main-thread video processing
+│   ├── components/             # React components
+│   └── types/
+│       └── wave.ts             # Shared TypeScript interfaces used across all phases
+├── vitest.config.ts            # Dual-environment Vitest setup (node + jsdom)
+└── vitest.setup.ts             # jest-dom matchers setup
+```
 
 ## Getting Started
 
-First, run the development server:
-
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000) to view the app.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Testing
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+npm run test        # run all tests once
+npm run test:watch  # watch mode
+```
 
-## Learn More
+## Build & Lint
 
-To learn more about Next.js, take a look at the following resources:
+```bash
+npm run build
+npm run lint
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Deploying to Vercel
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+This is a standard Next.js app, so no `vercel.json` is required — Vercel auto-detects
+the framework and build/output settings from `package.json`/`next.config.ts`.
 
-## Deploy on Vercel
+Using the [Vercel CLI](https://vercel.com/docs/cli):
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+```bash
+npm i -g vercel
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+# first-time setup / preview deployment
+vercel
+
+# production deployment
+vercel --prod
+```
