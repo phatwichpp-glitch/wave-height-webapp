@@ -1,10 +1,14 @@
 "use client";
 
-import { useState } from "react";
-import type { CalibrationData, WaveDataPoint } from "@/types/wave";
+import { useMemo, useState } from "react";
+import type { CalibrationData, WaveDataPoint, WaveStatistics } from "@/types/wave";
 import VideoUploader from "@/components/VideoUploader";
 import CalibrationCanvas from "@/components/CalibrationCanvas";
 import ProcessingPanel from "@/components/ProcessingPanel";
+import ElevationChart from "@/components/ElevationChart";
+import WaveHeightHistogram from "@/components/WaveHeightHistogram";
+import ResultsSummary from "@/components/ResultsSummary";
+import { computeWaveStatistics } from "@/lib/waveStatistics";
 
 export default function Home() {
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
@@ -21,6 +25,22 @@ export default function Home() {
     setCalibration(data);
     setWaveData(null);
   }
+
+  const { stats, statsError } = useMemo((): {
+    stats: WaveStatistics | null;
+    statsError: string | null;
+  } => {
+    if (!waveData) {
+      return { stats: null, statsError: null };
+    }
+    try {
+      const timeS = waveData.map((d) => d.timeS);
+      const elevationCm = waveData.map((d) => d.elevationCm);
+      return { stats: computeWaveStatistics(timeS, elevationCm), statsError: null };
+    } catch (err) {
+      return { stats: null, statsError: err instanceof Error ? err.message : String(err) };
+    }
+  }, [waveData]);
 
   return (
     <div className="flex flex-1 justify-center bg-zinc-50 dark:bg-black">
@@ -58,12 +78,27 @@ export default function Home() {
         )}
 
         {waveData && (
-          <section className="flex flex-col gap-2 rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+          <section className="flex flex-col gap-6 rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
             <StepLabel step={4} title="Results" />
-            <p className="text-sm text-zinc-600 dark:text-zinc-400">
-              {waveData.length} data points ready — charts and statistics coming in
-              the next phase.
-            </p>
+
+            <ElevationChart data={waveData} />
+
+            {statsError && (
+              <p className="text-sm text-red-600">
+                Could not compute wave statistics: {statsError}
+              </p>
+            )}
+
+            {stats && (
+              <>
+                <WaveHeightHistogram
+                  waves={stats.waves}
+                  hMean={stats.hMean}
+                  hSignificant={stats.hSignificant}
+                />
+                <ResultsSummary waveData={waveData} stats={stats} />
+              </>
+            )}
           </section>
         )}
       </main>
