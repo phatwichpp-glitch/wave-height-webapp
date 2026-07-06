@@ -1,25 +1,35 @@
 import { extractColumnProfile, findSurfaceEdge } from "@/lib/surfaceDetector";
-import type { EdgeResult } from "@/lib/surfaceDetector";
+
+export interface PointRequest {
+  pointId: string;
+  xColumnRelative: number;
+  searchRange: [number, number] | null;
+}
 
 export interface WorkerRequestMessage {
   imageData: ImageData;
-  xColumnRelative: number;
+  points: PointRequest[];
   columnWidth: number;
-  searchRange: [number, number] | null;
   smoothSigma: number;
 }
 
-export type WorkerResponseMessage = EdgeResult;
+export interface PointResult {
+  pointId: string;
+  yPosition: number;
+  confidence: number;
+}
+
+export type WorkerResponseMessage = PointResult[];
 
 // Design trade-off: this worker is intentionally stateless — it does not keep
-// its own SurfaceTracker/lastY. The main thread (videoProcessor.ts) owns the
-// tracking state and sends the already-computed searchRange with every
-// message instead. That keeps this file a pure "compute one frame" step and
-// avoids a class of bugs where a reused worker instance carries stale lastY
-// state across unrelated processVideo() calls (e.g. re-processing a video, or
-// running a second video without creating a fresh worker). The cost is one
-// small extra field (searchRange) sent per message instead of letting the
-// worker track it internally.
+// its own SurfaceTracker/lastY per point. The main thread (videoProcessor.ts)
+// owns the tracking state (one lastY per measurement point) and sends each
+// point's already-computed searchRange with every message instead. That keeps
+// this file a pure "compute one frame, all points" step and avoids a class of
+// bugs where a reused worker instance carries stale lastY state across
+// unrelated processVideo() calls. All points for a frame are bundled into a
+// single message (one imageData crop covering every point's column) to avoid
+// the far larger overhead of a separate postMessage round-trip per point.
 
 // This project's tsconfig includes the "dom" lib (for the rest of the app),
 // which is not compatible with also including the "webworker" lib in the same
@@ -32,10 +42,13 @@ const workerSelf = self as unknown as {
 };
 
 workerSelf.onmessage = (event) => {
-  const { imageData, xColumnRelative, columnWidth, searchRange, smoothSigma } = event.data;
+  const { imageData, points, columnWidth, smoothSigma } = event.data;
 
-  const profile = extractColumnProfile(imageData, xColumnRelative, columnWidth);
-  const result = findSurfaceEdge(profile, searchRange, smoothSigma);
+  const results: PointResult[] = points.map((point) => {
+    const profile = extractColumnProfile(imageData, point.xColumnRelative, columnWidth);
+    const { yPosition, confidence } = findSurfaceEdge(profile, point.searchRange, smoothSigma);
+    return { pointId: point.pointId, yPosition, confidence };
+  });
 
-  workerSelf.postMessage(result);
+  workerSelf.postMessage(results);
 };

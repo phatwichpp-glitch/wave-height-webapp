@@ -44,8 +44,20 @@ Open [http://localhost:3000](http://localhost:3000) to view the app.
 ## Testing
 
 ```bash
-npm run test        # run all tests once
-npm run test:watch  # watch mode
+npm run test        # unit + component tests (Vitest), run once
+npm run test:watch  # unit + component tests, watch mode
+npm run test:e2e    # end-to-end (Playwright): builds, starts, and drives a real browser
+```
+
+`npm run test:e2e` regenerates its synthetic test video first (`pretest:e2e` runs
+`scripts/generate-test-video.mjs`), then builds and starts the app in production mode
+and runs `e2e/wave-analysis.spec.ts` against it — this is what actually verifies the
+Web Worker still works correctly in a real production build (dev and prod bundle
+workers differently). You can also generate a custom test video by hand:
+
+```bash
+npm run generate-test-video -- --amplitude-px 20 --period-s 1 --duration-s 8 \
+  --fps 30 --width 320 --height 240 --output my-test-video.mp4
 ```
 
 ## Build & Lint

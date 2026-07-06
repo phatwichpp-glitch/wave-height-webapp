@@ -498,86 +498,103 @@ interface MultiPointWaveData {
 
 ---
 
-## Phase 9: Auto Re-calibration / Camera Stability Compensation
+## Phase 9: Ruler-Based Continuous Re-calibration (แก้ทั้งกล้องเลื่อนตำแหน่งและซูมเข้า-ออก)
 
 ```
-ทำงานต่อจากโปรเจกต์ wave-height-webapp (ต่อจาก Phase 8) เพิ่มระบบชดเชยกล้องขยับ/สั่นเล็กน้อยระหว่างถ่ายภาคสนามยาว ๆ
-เป้าหมาย: ถ้ากล้องขยับไปเล็กน้อย (เช่น ลมสะเทือน ขาตั้งขยับ) ตำแหน่ง xColumn/baselineY ที่ตั้งไว้ตอนแรกจะไม่ตรงกับตำแหน่งจริงในเฟรมหลัง ๆ ทำให้ผลวัดคลาดเคลื่อน ระบบนี้ตรวจจับการขยับด้วย template matching แล้วชดเชยตำแหน่งให้ถูกต้องอัตโนมัติ
+ทำงานต่อจากโปรเจกต์ wave-height-webapp (ต่อจาก Phase 8) เพิ่มระบบ re-calibrate ค่า pixels/cm และตำแหน่งจุดวัดใหม่อัตโนมัติทุก ๆ N เฟรม โดยอ่านขีดสเกลบนไม้บรรทัดที่อยู่ในเฟรมจริง (ไม่ใช่ template matching จุด marker เฉย ๆ)
 
-หมายเหตุ: ฟีเจอร์นี้ซับซ้อนที่สุดในระบบ ให้ implement ทีละส่วนและเทสให้แน่ใจก่อนต่อส่วนถัดไป
+บริบทสำคัญ (ต่างจาก Phase 9 เวอร์ชันแรกที่เคยออกแบบไว้): กรณีใช้งานจริงคือถ่ายมือถือ ไม่ได้ตั้งขาตั้งกล้อง กล้องขยับทั้งเลื่อนตำแหน่งและหมุน/เอียง ที่สำคัญคือ**กล้องเข้าใกล้-ถอยห่างจากไม้บรรทัดจริง** ทำให้ขนาดไม้บรรทัดในภาพเปลี่ยนไปตลอด (pixels/cm ไม่คงที่) — การ track แค่ offset ตำแหน่ง (dx, dy) แบบเดิมแก้ปัญหานี้ไม่ได้ เพราะไม่ได้แก้เรื่องสเกลเปลี่ยน จึงต้อง**อ่านขีดบนไม้บรรทัดใหม่ทุกครั้ง**แทน ซึ่งแก้ได้ทั้งเลื่อนตำแหน่งและซูมพร้อมกันในคราวเดียว เพราะเป็นการวัดค่าจริงจากวัตถุอ้างอิงโดยตรง ไม่ใช่การเดา transform ของกล้อง
 
-ส่วนที่ 1 — src/lib/stabilityTracker.ts:
+หลักการออกแบบที่เปลี่ยนไปจากเฟสก่อนหน้า: **MeasurementPoint จะไม่ผูกกับตำแหน่งพิกเซลตายตัวอีกต่อไป** แต่ผูกกับ "ค่าจริงบนไม้บรรทัด" แทน (เช่น baseline = ขีด 25cm, จุดวัดอยู่ห่างไม้บรรทัดไปทางขวา 40cm) แล้วแปลงกลับเป็นพิกเซลใหม่ทุกครั้งที่ re-calibrate
 
-export interface TemplatePatch {
-  data: Float32Array;  // grayscale patch, flattened row-major
-  width: number;
-  height: number;
-  refX: number;         // ตำแหน่ง x,y ของ patch นี้ในเฟรมอ้างอิง (เฟรมแรก)
-  refY: number;
+ส่วนที่ 1 — แก้ src/types/wave.ts:
+
+interface RulerCalibration {
+  point1: { x: number; y: number; valueCm: number };  // คลิกขีดที่ 1 พร้อมค่าจริงที่อ่านได้ เช่น {x:500,y:120,valueCm:30}
+  point2: { x: number; y: number; valueCm: number };   // คลิกขีดที่ 2 พร้อมค่าจริง
+  roi: { x: number; y: number; width: number; height: number };  // กรอบสี่เหลี่ยมครอบไม้บรรทัดสำหรับค้นหาขีดทุกเฟรม (ให้กว้างกว่าตัวไม้บรรทัดเล็กน้อยเผื่อกล้องเลื่อน/ซูม)
 }
 
-export function extractTemplate(
-  imageData: ImageData,
-  centerX: number,
-  centerY: number,
-  size: number = 30
-): TemplatePatch
-- แปลงเป็น grayscale ตัด patch ขนาด size x size รอบจุด (centerX, centerY) (clamp ขอบภาพ)
+แก้ MeasurementPoint (จาก Phase 7) เพิ่ม field:
+  baselineValueCm: number | null;   // ค่าจริงบนไม้บรรทัดที่ตรงกับระดับน้ำนิ่ง (ถ้า null ให้ auto-detect เหมือนเดิมจาก 30 เฟรมแรกแล้วแปลงเป็น valueCm ด้วย calibration ตอนนั้น)
+  xOffsetCm: number;                 // ระยะห่างแนวนอนจากตำแหน่งไม้บรรทัด (บวก = ขวา, ลบ = ซ้าย) แทนที่การ hardcode เป็น xColumn ตายตัว
 
-export function normalizedCrossCorrelation(
-  template: TemplatePatch,
-  searchImageData: ImageData,
-  searchCenterX: number,
-  searchCenterY: number,
-  searchRadius: number = 15
-): { dx: number; dy: number; score: number }
-- ทำ grayscale ของ searchImageData
-- ไล่ทุกตำแหน่ง offset (dx, dy) ในช่วง -searchRadius ถึง +searchRadius รอบ (searchCenterX, searchCenterY)
-- คำนวณ normalized cross-correlation score ระหว่าง template patch กับ patch ที่ตำแหน่งนั้นในภาพค้นหา (สูตรมาตรฐาน: covariance หารด้วย product ของ standard deviation ทั้งสอง patch)
-- คืนค่า offset ที่ให้ score สูงสุด พร้อม score นั้น (score ใกล้ 1.0 = match ดีมาก, ใกล้ 0 หรือลบ = ไม่ match)
-- Comment อธิบายความซับซ้อนเชิงคำนวณ (O(searchRadius^2 * size^2)) และเหตุผลว่าทำไมต้องจำกัด searchRadius และ size ให้เล็กพอ ไม่ให้ค้างตอนรันบน main thread (แนะนำให้ค่า default พอเหมาะ ไม่ต้องปรับ)
+ส่วนที่ 2 — src/lib/rulerTracker.ts:
 
-export class StabilityTracker {
+export function extractRulerProfile(imageData: ImageData, roi: {x,y,width,height}): Float32Array
+- เฉลี่ยความสว่าง (grayscale) ตามแนวแกนยาวของไม้บรรทัดภายใน roi (ถ้าไม้บรรทัดแนวตั้ง เฉลี่ยตามแนว y เหมือน extractColumnProfile จาก Phase 2 แต่จำกัดเฉพาะในกรอบ roi)
+
+export interface TickPeak { pixelPos: number; strength: number; }
+
+export function detectTickPeaks(profile: Float32Array, smoothSigma: number = 1.5): TickPeak[]
+- reuse gaussianSmooth1D และ computeGradient จาก Phase 2 (surfaceDetector.ts) — import มาใช้ซ้ำ ไม่ copy โค้ด
+- หา local maxima ของ |gradient| ที่สูงกว่า threshold (เช่น mean + 1*std ของสัญญาณ) = ตำแหน่งขีดที่เป็นไปได้แต่ละขีด
+- คืนค่า array ของ TickPeak เรียงตาม pixelPos
+
+export interface RulerFit { pixelsPerCm: number; anchorPixelPos: number; anchorValueCm: number; fitError: number; }
+
+export function fitUniformGrid(
+  peaks: TickPeak[],
+  priorPixelsPerCm: number,
+  priorAnchorPixelPos: number,
+  priorAnchorValueCm: number,
+  cmPerTick: number
+): RulerFit
+- ใช้ priorPixelsPerCm เป็นค่าตั้งต้นในการคาดเดาว่า peak แต่ละตัวควรอยู่ห่างกันกี่พิกเซล (= cmPerTick * priorPixelsPerCm)
+- จับคู่ peaks ที่ตรวจเจอกับตำแหน่งบนกริดสม่ำเสมอที่คาดไว้ (ให้แต่ละ peak มี "ลำดับขีด" i เทียบกับ anchor โดยหาค่า i ที่ทำให้ตำแหน่งที่คาดไว้ (priorAnchorPixelPos + i*cmPerTick*priorPixelsPerCm) ใกล้เคียงตำแหน่งจริงของ peak นั้นที่สุด)
+- ทำ linear regression (least squares) ระหว่างลำดับขีด i กับตำแหน่งพิกเซลจริงของแต่ละ peak ที่จับคู่ได้ → ได้ pixelsPerCm และ anchorPixelPos ที่แม่นยำขึ้นของเฟรมนี้
+- คำนวณ fitError (เช่น RMS ของ residual การ fit) ใช้บอก confidence ของการ re-calibrate ครั้งนี้
+- คืนค่า RulerFit — ถ้า fitError สูงเกิน threshold ที่กำหนด (สัญญาณว่าน่าจะ fit ผิดขีด/สับสน) ให้ผู้เรียกใช้ (RulerCalibrationTracker) เลือกไม่อัปเดตค่าและใช้ค่าเดิมต่อ
+
+export class RulerCalibrationTracker {
   constructor(
-    private template: TemplatePatch,
-    private checkIntervalFrames: number = 30,
-    private searchRadius: number = 15
-  ) {}
+    private initialCalibration: RulerCalibration,
+    private cmPerTick: number,
+    private checkIntervalFrames: number = 10,   // ถี่กว่า Phase 9 เวอร์ชันก่อน เพราะซูมกล้องเปลี่ยนต่อเนื่องระหว่างเฟรมได้เร็วกว่าการสั่นเฉย ๆ
+    private maxFitError: number = 2.0
+  ) {
+    // คำนวณ priorPixelsPerCm, priorAnchorPixelPos, priorAnchorValueCm เริ่มต้นจาก initialCalibration.point1/point2
+  }
 
   private frameCounter = 0
-  private lastOffset = { dx: 0, dy: 0 }
+  private currentFit: RulerFit  // ค่าปัจจุบันที่ใช้อยู่ อัปเดตเมื่อ fit ผ่านเกณฑ์เท่านั้น
+  private currentRulerCenterX: number  // ตำแหน่ง x ปัจจุบันของไม้บรรทัด (ใช้เป็น anchor คำนวณ xOffsetCm)
 
   shouldCheck(): boolean
-  - คืนค่า true ทุก checkIntervalFrames เฟรม (เพิ่ม frameCounter ทุกครั้งที่เรียก)
+  update(imageData: ImageData): RulerFit
+  - เรียก extractRulerProfile + detectTickPeaks + fitUniformGrid ด้วย currentFit เป็น prior (ไม่ใช่ initial calibration เฉย ๆ เพื่อ track การเปลี่ยนแปลงต่อเนื่องเป็นทอด ๆ)
+  - ถ้า fitError ผ่านเกณฑ์: อัปเดต currentFit แล้วคืนค่าใหม่
+  - ถ้าไม่ผ่าน: คืนค่า currentFit เดิม (ไม่อัปเดต) พร้อม log คำเตือนว่า re-calibrate รอบนี้ไม่น่าเชื่อถือ
 
-  update(imageData: ImageData): { dx: number; dy: number; score: number }
-  - เรียก normalizedCrossCorrelation จากตำแหน่งอ้างอิงเดิม + lastOffset (สะสม offset ต่อเนื่อง ไม่ reset กลับไปที่ตำแหน่งอ้างอิงเดิมทุกครั้ง เพราะกล้องอาจขยับสะสมไปเรื่อย ๆ)
-  - ถ้า score ที่ได้ต่ำกว่า threshold (เช่น 0.5) ให้ไม่อัปเดต lastOffset (ถือว่าหา marker ไม่เจอ อาจเพราะแสงเปลี่ยนหรือมีอะไรบังชั่วคราว) และ log คำเตือน แต่ไม่ throw error (ให้ pipeline ทำงานต่อด้วย offset เดิมที่เชื่อถือได้ล่าสุด)
-  - อัปเดต lastOffset ถ้า score ผ่าน threshold แล้วคืนค่า offset ปัจจุบัน
+  valueCmToPixelY(valueCm: number): number
+  - แปลงค่าจริง (cm) เป็นตำแหน่งพิกเซล y โดยใช้ currentFit ปัจจุบัน (สูตร: anchorPixelPos - (valueCm - anchorValueCm) * pixelsPerCm หรือทิศทางตรงข้ามแล้วแต่ทิศของแกน y ในภาพ — ให้ระบุ comment ชัดเจนว่า assume แกนไหนคือทิศเพิ่มขึ้นของค่า)
 
-ส่วนที่ 2 — UI สำหรับเลือก reference marker:
-- src/components/MarkerSelector.tsx: ให้ผู้ใช้คลิกเลือกตำแหน่งบน canvas เฟรมแรกที่มี marker ความคมชัดสูง (เช่น มุมของไม้บรรทัด, จุดสีตัดกับพื้นหลังชัด) — แนะนำในข้อความ UI ว่าควรเลือกจุดที่นิ่ง ไม่ใช่ผิวน้ำหรือของที่เคลื่อนไหว
-- แสดง preview patch ที่ตัดมา (ขยายให้ดูชัดว่า template ที่จะใช้ track คือส่วนไหนของภาพ)
-- checkbox "เปิดใช้ Auto Re-calibration" (default ปิด เพราะเพิ่ม overhead การประมวลผล ควรเปิดเฉพาะกรณีที่รู้ว่ากล้องอาจขยับจริง ๆ) + input "ตรวจสอบทุก N เฟรม" (default 30)
+  pixelXForOffset(offsetCm: number): number
+  - แปลงระยะห่างแนวนอนจากไม้บรรทัด (cm) เป็นตำแหน่งพิกเซล x โดยใช้ currentRulerCenterX + offsetCm * currentFit.pixelsPerCm (สมมติ pixels/cm เท่ากันทั้งแนวตั้งแนวนอน เพราะวิดีโอผ่านการแก้ fisheye เป็น Linear/rectilinear แล้วจาก Insta360 ตามที่ผู้ใช้ทำไว้ก่อนอัปโหลดเข้าระบบนี้)
 
-ส่วนที่ 3 — แก้ src/lib/videoProcessor.ts:
-- ถ้าเปิดใช้ auto re-calibration: หลัง captureFrameAtTime ของแต่ละเฟรม ให้ stabilityTracker.shouldCheck() ก่อน ถ้าจริงให้เรียก update() ด้วย ImageData ของเฟรมนั้น (ต้อง getImageData บริเวณรอบ marker เพิ่มจากที่ crop ไว้สำหรับจุดวัดคลื่นอยู่แล้ว หรือ getImageData ทั้งเฟรมไปเลยถ้า marker อยู่ไกลจากจุดวัด — อธิบาย trade-off นี้ในโค้ด comment)
-- นำ offset (dx, dy) ที่ได้ไปปรับตำแหน่ง xColumn และ baselineY ของทุก MeasurementPoint ก่อนส่งเข้า worker คำนวณ surface detection ของเฟรมนั้น (offset เดียวกันใช้กับทุกจุดวัด เพราะสมมติว่ากล้องขยับแบบ translation รวม ไม่ได้บิดเบี้ยว/หมุน)
-- ส่ง offset ปัจจุบันขึ้นไปให้ LiveViewerCanvas แสดงด้วย (เพิ่มข้อความเล็ก ๆ บน overlay บอก "Camera offset: dx=X, dy=Y" เพื่อให้ผู้ใช้เห็นว่าระบบชดเชยอยู่เท่าไหร่ ณ ขณะนั้น — เป็นข้อมูล debug ที่มีประโยชน์มาก)
+ส่วนที่ 3 — UI: src/components/RulerCalibrationPanel.tsx (แทนที่/ต่อยอด CalibrationCanvas จาก Phase 1):
+- ให้ผู้ใช้วาดกรอบสี่เหลี่ยม (drag บน canvas) ครอบไม้บรรทัดทั้งเส้นที่มองเห็นในเฟรม → ได้ roi
+- ให้คลิก 2 ขีดบนไม้บรรทัดภายในกรอบนั้น แล้วกรอกค่าจริง (valueCm) ของแต่ละขีดที่คลิก (ไม่ใช่กรอกแค่ระยะห่าง เหมือน Phase 1 เดิม — ต้องกรอกค่าที่ขีดนั้นจริง ๆ เพราะต้องใช้เป็น absolute reference ไม่ใช่แค่ระยะสัมพัทธ์)
+- input "ระยะห่างระหว่างขีดย่อยแต่ละขีด (cm)" (cmPerTick) เพื่อให้ fitUniformGrid รู้ว่าขีดที่เห็นถี่ ๆ แต่ละอันห่างกันกี่ cm จริง (เช่น 1 cm/ขีด)
+- สำหรับแต่ละ MeasurementPoint (ต่อจาก Phase 7): เปลี่ยน input จาก "xColumn พิกเซล" เป็น "ระยะห่างจากไม้บรรทัด (cm)" และ baseline จาก "พิกเซล y" เป็น "อ่านค่าบนไม้บรรทัดตรงระดับน้ำนิ่ง (cm)" — ถ้าไม่ทราบให้ปล่อยว่างใช้ auto-detect เหมือนเดิม (ระบบจะแปลงเป็น valueCm ให้เองจากตำแหน่งพิกเซลที่ auto-detect ได้ผ่าน calibration ปัจจุบัน)
 
-เขียน unit test ในไฟล์ src/lib/stabilityTracker.test.ts:
-- สร้าง ImageData ปลอมที่มี marker (จำลองด้วย pixel pattern สี่เหลี่ยมคมชัดตัดกับพื้นหลัง) ที่ตำแหน่งรู้ค่าแน่นอนในเฟรมอ้างอิง
-- extractTemplate จากตำแหน่งนั้น
-- สร้างเฟรมที่สองที่ marker เดียวกันขยับไปตำแหน่งใหม่ที่รู้ค่า dx, dy แน่นอน (shift ทั้งภาพหรือ shift แค่บริเวณ marker ก็ได้ ให้ตรงกับสถานการณ์จำลองกล้องขยับ)
-- test ว่า normalizedCrossCorrelation หา offset ที่ตรงกับ dx, dy ที่ตั้งไว้ (error ไม่เกิน 1-2px)
-- test score สูง (>0.8) เมื่อ match ดี และ score ต่ำเมื่อ marker ถูกบังหรือเปลี่ยนไปมาก (จำลองด้วย noise สุ่มทับ marker)
-- test StabilityTracker.shouldCheck() คืนค่า true ตามรอบ checkIntervalFrames ที่ถูกต้อง
-- test ว่า score ต่ำกว่า threshold แล้ว lastOffset ไม่ถูกอัปเดต (ค่ายังเป็นค่าก่อนหน้า)
+ส่วนที่ 4 — แก้ src/lib/videoProcessor.ts:
+- สร้าง RulerCalibrationTracker instance จาก RulerCalibration ที่ได้จาก UI
+- ในลูปประมวลผลแต่ละเฟรม: เรียก tracker.shouldCheck() ก่อน ถ้าจริงให้ getImageData บริเวณ roi (crop เฉพาะกรอบไม้บรรทัด ไม่ต้องทั้งเฟรม เพื่อประหยัด) แล้วเรียก tracker.update()
+- ก่อนส่งงานเข้า worker ของแต่ละเฟรม: คำนวณ xColumn และ baselineY ปัจจุบันของทุก MeasurementPoint จาก tracker.pixelXForOffset(point.xOffsetCm) และ tracker.valueCmToPixelY(point.baselineValueCm) แล้วค่อยส่งพิกัดพิกเซลเหล่านี้เข้า worker เหมือนเฟสก่อน ๆ (worker เองไม่ต้องรู้เรื่อง ruler tracking เลย รับแค่พิกัดพิกเซลที่คำนวณมาให้แล้ว)
+- ส่งค่า currentFit.pixelsPerCm ปัจจุบันขึ้นไปให้ LiveViewerCanvas (จาก Phase 8) แสดงเป็นตัวเลข debug เช่น "Scale: 12.3 px/cm" อัปเดตทุกครั้งที่ re-calibrate เพื่อให้ผู้ใช้เห็นว่าระบบกำลังปรับสเกลตามจริงมั้ย
 
-รันเทสด้วย `npm run test` และทดสอบด้วยมือ: generate วิดีโอทดสอบที่ขยับกล้องเล็กน้อย (translate ทั้งเฟรมทีละ 1px ทุก ๆ 60 เฟรม จำลองกล้องสั่นสะสม) เทียบผลวัดความสูงคลื่นระหว่างเปิด/ปิด auto re-calibration ว่าเมื่อเปิดแล้วผลแม่นยำกว่าจริง (ค่า hSignificant ที่วัดได้ใกล้เคียงค่าจริงที่ตั้งไว้ตอน generate มากกว่าตอนปิดฟีเจอร์นี้)
+เขียน unit test ในไฟล์ src/lib/rulerTracker.test.ts:
+- สร้าง ImageData ปลอมที่มีลายขีดสม่ำเสมอ (จำลองไม้บรรทัด: แถบมืด-สว่างสลับกันเป็นคาบ ระยะห่างคงที่ตาม pixelsPerCm ที่ตั้งไว้ เช่น 20px ต่อขีด) → test detectTickPeaks เจอจำนวนขีดและตำแหน่งถูกต้อง (error ไม่เกิน 2px ต่อขีด)
+- test fitUniformGrid กับ peaks ที่สร้างจากค่า pixelsPerCm ที่รู้ค่าแน่นอน → ได้ pixelsPerCm ที่ fit กลับมาตรงกับค่าจริง (error ไม่เกิน 3%)
+- **เทสสำคัญที่สุดของเฟสนี้**: สร้างชุดภาพจำลอง "กล้องซูมเข้า" ต่อเนื่อง (ขีดเดิมแต่ pixelsPerCm เพิ่มขึ้นทีละน้อยทุกเฟรม จำลองกล้องเข้าใกล้ไม้บรรทัด) → test ว่า RulerCalibrationTracker.update() ที่เรียกต่อเนื่องหลายเฟรม ตามการเปลี่ยนแปลงของ pixelsPerCm ได้ต่อเนื่องไม่หลุดล็อก (ไม่ jump ไปนับขีดผิดตัว) ตลอดช่วงซูมที่จำลอง
+- test ว่าเมื่อ peaks สับสน/nose สูงผิดปกติ (fitError เกิน threshold) ค่า currentFit ไม่ถูกอัปเดต (ยังคงใช้ค่าก่อนหน้าต่อ)
+- test valueCmToPixelY และ pixelXForOffset ให้ผลตรงกับที่คำนวณมือได้ในเคสง่าย ๆ
+
+รันเทสด้วย `npm run test` และทดสอบด้วยมือ: generate วิดีโอทดสอบที่จำลองกล้องซูมเข้า-ออกต่อเนื่อง (ไม้บรรทัดขยายขนาดขึ้น-ลงในเฟรมตามฟังก์ชันที่กำหนดได้) พร้อมคลื่น sine wave ที่รู้ amplitude แน่นอน ประมวลผลทั้งแบบเปิด/ปิด ruler re-calibration เทียบกันว่าเปิดแล้วค่า hSignificant ที่วัดได้ใกล้เคียงค่าจริงมากกว่าปิดจริง (ตอนปิดควรเห็นค่าคลาดเคลื่อนไปตามการซูม ตอนเปิดควรใกล้เคียงค่าจริงตลอด)
 ```
 
-**เกณฑ์ผ่านเฟส:** unit test ผ่านทั้งหมด, ทดสอบเทียบผลเปิด/ปิด auto re-calibration กับวิดีโอกล้องสั่นจำลองแล้วเห็นความแม่นยำดีขึ้นจริงเมื่อเปิดฟีเจอร์นี้ (ถ้าไม่เห็นความต่าง ต้องกลับไปตรวจ logic การ apply offset ใน videoProcessor.ts)
+**เกณฑ์ผ่านเฟส:** unit test ผ่านทั้งหมด โดยเฉพาะเทส "กล้องซูมต่อเนื่อง" ที่ต้องตามสเกลได้โดยไม่หลุดล็อก, ทดสอบด้วยมือเทียบเปิด/ปิดฟีเจอร์กับวิดีโอซูมจำลองแล้วเห็นความแม่นยำต่างกันชัดเจน — ถ้าเปิดฟีเจอร์แล้วผลไม่ดีขึ้น ต้องกลับไปตรวจว่า videoProcessor.ts คำนวณ xColumn/baselineY จาก tracker ใหม่ทุกเฟรมจริงหรือยังใช้ค่าเดิมค้างอยู่
 
 ---
 

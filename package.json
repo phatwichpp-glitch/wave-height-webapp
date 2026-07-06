@@ -8,15 +8,21 @@
     "start": "next start",
     "lint": "eslint",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "pretest:e2e": "node scripts/generate-test-video.mjs --amplitude-px 20 --period-s 1 --duration-s 8 --fps 30 --width 320 --height 240 --output e2e/fixtures/synthetic-wave.mp4",
+    "test:e2e": "playwright test",
+    "generate-test-video": "node scripts/generate-test-video.mjs"
   },
   "dependencies": {
+    "jszip": "^3.10.1",
     "next": "16.2.10",
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "recharts": "^3.9.2"
   },
   "devDependencies": {
+    "@napi-rs/canvas": "^1.0.2",
+    "@playwright/test": "^1.61.1",
     "@tailwindcss/postcss": "^4",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
@@ -26,6 +32,7 @@
     "@vitejs/plugin-react": "^6.0.3",
     "eslint": "^9",
     "eslint-config-next": "16.2.10",
+    "ffmpeg-static": "^5.3.0",
     "jsdom": "^29.1.1",
     "tailwindcss": "^4",
     "typescript": "^5",

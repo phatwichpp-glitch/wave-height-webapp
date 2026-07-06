@@ -1,7 +1,9 @@
 "use client";
 
+import { useState } from "react";
 import {
   CartesianGrid,
+  Legend,
   Line,
   LineChart,
   ReferenceLine,
@@ -10,17 +12,55 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import type { WaveDataPoint } from "@/types/wave";
+import type { MeasurementPoint, WaveDataPoint } from "@/types/wave";
 
 interface ElevationChartProps {
-  data: WaveDataPoint[];
+  data: Record<string, WaveDataPoint[]>;
+  points: MeasurementPoint[];
 }
 
-export default function ElevationChart({ data }: ElevationChartProps) {
+function mergeDataForChart(
+  data: Record<string, WaveDataPoint[]>,
+  points: MeasurementPoint[]
+): Array<Record<string, number>> {
+  const referenceData = points.length > 0 ? data[points[0].id] ?? [] : [];
+
+  return referenceData.map((referenceSample, i) => {
+    const row: Record<string, number> = { timeS: referenceSample.timeS };
+    for (const point of points) {
+      const sample = data[point.id]?.[i];
+      if (sample) {
+        row[point.id] = sample.elevationCm;
+      }
+    }
+    return row;
+  });
+}
+
+export default function ElevationChart({ data, points }: ElevationChartProps) {
+  const [hiddenPointIds, setHiddenPointIds] = useState<Set<string>>(new Set());
+  const chartData = mergeDataForChart(data, points);
+
+  function handleLegendClick(entry: { dataKey?: unknown }) {
+    if (typeof entry.dataKey !== "string") {
+      return;
+    }
+    const pointId = entry.dataKey;
+    setHiddenPointIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(pointId)) {
+        next.delete(pointId);
+      } else {
+        next.add(pointId);
+      }
+      return next;
+    });
+  }
+
   return (
     <div className="h-72 w-full">
       <ResponsiveContainer width="100%" height="100%">
-        <LineChart data={data} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
+        <LineChart data={chartData} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="currentColor" opacity={0.15} />
           <XAxis
             dataKey="timeS"
@@ -37,14 +77,21 @@ export default function ElevationChart({ data }: ElevationChartProps) {
             }
           />
           <ReferenceLine y={0} stroke="#9ca3af" strokeDasharray="4 4" />
-          <Line
-            type="monotone"
-            dataKey="elevationCm"
-            name="Elevation (cm)"
-            stroke="#3b82f6"
-            dot={false}
-            isAnimationActive={false}
-          />
+          {points.length > 1 && (
+            <Legend onClick={handleLegendClick} cursor="pointer" />
+          )}
+          {points.map((point) => (
+            <Line
+              key={point.id}
+              type="monotone"
+              dataKey={point.id}
+              name={point.label}
+              stroke={point.color}
+              hide={hiddenPointIds.has(point.id)}
+              dot={false}
+              isAnimationActive={false}
+            />
+          ))}
         </LineChart>
       </ResponsiveContainer>
     </div>

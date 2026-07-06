@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import {
   Bar,
   BarChart,
@@ -10,12 +11,11 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import type { WaveEvent } from "@/types/wave";
+import type { MeasurementPoint, WaveStatistics } from "@/types/wave";
 
 interface WaveHeightHistogramProps {
-  waves: WaveEvent[];
-  hMean: number;
-  hSignificant: number;
+  points: MeasurementPoint[];
+  statsByPoint: Record<string, WaveStatistics>;
   binCount?: number;
 }
 
@@ -62,41 +62,74 @@ function findBinLabelForValue(bins: HistogramBin[], value: number): string {
 }
 
 export default function WaveHeightHistogram({
-  waves,
-  hMean,
-  hSignificant,
+  points,
+  statsByPoint,
   binCount = 15,
 }: WaveHeightHistogramProps) {
-  const heights = waves.map((w) => w.heightCm);
+  const [selectedId, setSelectedId] = useState(points[0]?.id ?? "");
+  const activeId = statsByPoint[selectedId] ? selectedId : points[0]?.id ?? "";
+  const stats = statsByPoint[activeId];
+
+  if (!stats) {
+    return (
+      <p className="text-sm text-zinc-500">
+        Not enough waves detected to show a histogram.
+      </p>
+    );
+  }
+
+  const heights = stats.waves.map((w) => w.heightCm);
   const bins = binHeights(heights, binCount);
 
   return (
-    <div className="h-72 w-full">
-      <ResponsiveContainer width="100%" height="100%">
-        <BarChart data={bins} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke="currentColor" opacity={0.15} />
-          <XAxis
-            dataKey="rangeLabel"
-            label={{ value: "Wave height (cm)", position: "insideBottom", offset: -4 }}
-          />
-          <YAxis
-            allowDecimals={false}
-            label={{ value: "Count", angle: -90, position: "insideLeft" }}
-          />
-          <Tooltip />
-          <ReferenceLine
-            x={findBinLabelForValue(bins, hMean)}
-            stroke="#22c55e"
-            label={{ value: "Mean", position: "top", fill: "#22c55e", fontSize: 11 }}
-          />
-          <ReferenceLine
-            x={findBinLabelForValue(bins, hSignificant)}
-            stroke="#ef4444"
-            label={{ value: "Hs", position: "top", fill: "#ef4444", fontSize: 11 }}
-          />
-          <Bar dataKey="count" fill="#3b82f6" />
-        </BarChart>
-      </ResponsiveContainer>
+    <div className="flex flex-col gap-2">
+      {points.length > 1 && (
+        <div className="flex flex-wrap gap-2">
+          {points.map((point) => (
+            <button
+              key={point.id}
+              type="button"
+              onClick={() => setSelectedId(point.id)}
+              className="rounded-full border px-3 py-1 text-xs font-medium"
+              style={
+                activeId === point.id
+                  ? { backgroundColor: point.color, borderColor: point.color, color: "white" }
+                  : { borderColor: point.color, color: point.color }
+              }
+            >
+              {point.label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      <div className="h-72 w-full">
+        <ResponsiveContainer width="100%" height="100%">
+          <BarChart data={bins} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="currentColor" opacity={0.15} />
+            <XAxis
+              dataKey="rangeLabel"
+              label={{ value: "Wave height (cm)", position: "insideBottom", offset: -4 }}
+            />
+            <YAxis
+              allowDecimals={false}
+              label={{ value: "Count", angle: -90, position: "insideLeft" }}
+            />
+            <Tooltip />
+            <ReferenceLine
+              x={findBinLabelForValue(bins, stats.hMean)}
+              stroke="#22c55e"
+              label={{ value: "Mean", position: "top", fill: "#22c55e", fontSize: 11 }}
+            />
+            <ReferenceLine
+              x={findBinLabelForValue(bins, stats.hSignificant)}
+              stroke="#ef4444"
+              label={{ value: "Hs", position: "top", fill: "#ef4444", fontSize: 11 }}
+            />
+            <Bar dataKey="count" fill="#3b82f6" />
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
     </div>
   );
 }

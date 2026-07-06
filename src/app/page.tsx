@@ -1,23 +1,59 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import type { CalibrationData, WaveDataPoint, WaveStatistics } from "@/types/wave";
+import type {
+  CalibrationData,
+  MeasurementPoint,
+  RulerCalibration,
+  WaveDataPoint,
+  WaveStatistics,
+} from "@/types/wave";
+import Link from "next/link";
 import VideoUploader from "@/components/VideoUploader";
 import CalibrationCanvas from "@/components/CalibrationCanvas";
+import RulerCalibrationPanel from "@/components/RulerCalibrationPanel";
 import ProcessingPanel from "@/components/ProcessingPanel";
 import ElevationChart from "@/components/ElevationChart";
 import WaveHeightHistogram from "@/components/WaveHeightHistogram";
 import ResultsSummary from "@/components/ResultsSummary";
 import { computeWaveStatistics } from "@/lib/waveStatistics";
 
+type CalibrationMode = "fixed" | "ruler";
+
+/** Derives an equivalent CalibrationData from a ruler calibration, purely for
+ * API compatibility with processVideo (which always takes a CalibrationData) —
+ * it's immediately superseded frame-by-frame once ruler tracking is active. */
+function calibrationFromRuler(ruler: RulerCalibration): CalibrationData {
+  const knownDistanceCm = Math.abs(ruler.point2.valueCm - ruler.point1.valueCm);
+  const pixelDistance = Math.abs(ruler.point2.y - ruler.point1.y);
+  return {
+    point1: { x: ruler.point1.x, y: ruler.point1.y },
+    point2: { x: ruler.point2.x, y: ruler.point2.y },
+    knownDistanceCm,
+    pixelsPerCm: pixelDistance / knownDistanceCm,
+  };
+}
+
 export default function Home() {
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
+  const [calibrationMode, setCalibrationMode] = useState<CalibrationMode>("fixed");
   const [calibration, setCalibration] = useState<CalibrationData | null>(null);
-  const [waveData, setWaveData] = useState<WaveDataPoint[] | null>(null);
+  const [rulerCalibration, setRulerCalibration] = useState<RulerCalibration | null>(null);
+  const [cmPerTick, setCmPerTick] = useState<number | undefined>(undefined);
+  const [waveData, setWaveData] = useState<Record<string, WaveDataPoint[]> | null>(null);
+  const [points, setPoints] = useState<MeasurementPoint[]>([]);
 
   function handleVideoLoaded(url: string) {
     setVideoUrl(url);
     setCalibration(null);
+    setRulerCalibration(null);
+    setWaveData(null);
+  }
+
+  function handleModeChange(mode: CalibrationMode) {
+    setCalibrationMode(mode);
+    setCalibration(null);
+    setRulerCalibration(null);
     setWaveData(null);
   }
 
@@ -26,21 +62,48 @@ export default function Home() {
     setWaveData(null);
   }
 
-  const { stats, statsError } = useMemo((): {
-    stats: WaveStatistics | null;
-    statsError: string | null;
+  function handleRulerCalibrated(ruler: RulerCalibration, tickSpacingCm: number) {
+    setRulerCalibration(ruler);
+    setCmPerTick(tickSpacingCm);
+    setCalibration(calibrationFromRuler(ruler));
+    setWaveData(null);
+  }
+
+  function handleProcessingComplete(
+    data: Record<string, WaveDataPoint[]>,
+    usedPoints: MeasurementPoint[]
+  ) {
+    setWaveData(data);
+    setPoints(usedPoints);
+  }
+
+  const { statsByPoint, statsErrorsByPoint } = useMemo((): {
+    statsByPoint: Record<string, WaveStatistics>;
+    statsErrorsByPoint: Record<string, string>;
   } => {
+    const statsByPoint: Record<string, WaveStatistics> = {};
+    const statsErrorsByPoint: Record<string, string> = {};
+
     if (!waveData) {
-      return { stats: null, statsError: null };
+      return { statsByPoint, statsErrorsByPoint };
     }
-    try {
-      const timeS = waveData.map((d) => d.timeS);
-      const elevationCm = waveData.map((d) => d.elevationCm);
-      return { stats: computeWaveStatistics(timeS, elevationCm), statsError: null };
-    } catch (err) {
-      return { stats: null, statsError: err instanceof Error ? err.message : String(err) };
+
+    for (const point of points) {
+      const pointData = waveData[point.id];
+      if (!pointData) {
+        continue;
+      }
+      try {
+        const timeS = pointData.map((d) => d.timeS);
+        const elevationCm = pointData.map((d) => d.elevationCm);
+        statsByPoint[point.id] = computeWaveStatistics(timeS, elevationCm);
+      } catch (err) {
+        statsErrorsByPoint[point.id] = err instanceof Error ? err.message : String(err);
+      }
     }
-  }, [waveData]);
+
+    return { statsByPoint, statsErrorsByPoint };
+  }, [waveData, points]);
 
   return (
     <div className="flex flex-1 justify-center bg-zinc-50 dark:bg-black">
@@ -52,6 +115,12 @@ export default function Home() {
           <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
             Analyze wave height from a video, entirely in your browser.
           </p>
+          <Link
+            href="/batch"
+            className="mt-2 inline-block text-sm text-blue-600 hover:underline dark:text-blue-400"
+          >
+            Process multiple videos at once →
+          </Link>
         </header>
 
         <section className="flex flex-col gap-3">
@@ -62,7 +131,40 @@ export default function Home() {
         {videoUrl && (
           <section className="flex flex-col gap-3">
             <StepLabel step={2} title="Calibrate against a known distance" />
-            <CalibrationCanvas videoUrl={videoUrl} onCalibrated={handleCalibrated} />
+
+            <div className="flex gap-2 text-sm">
+              <button
+                type="button"
+                onClick={() => handleModeChange("fixed")}
+                className={`rounded-full border px-3 py-1 ${
+                  calibrationMode === "fixed"
+                    ? "border-zinc-900 bg-zinc-900 text-white dark:border-zinc-100 dark:bg-zinc-100 dark:text-zinc-900"
+                    : "border-zinc-300 text-zinc-600 dark:border-zinc-700 dark:text-zinc-400"
+                }`}
+              >
+                Fixed camera
+              </button>
+              <button
+                type="button"
+                onClick={() => handleModeChange("ruler")}
+                className={`rounded-full border px-3 py-1 ${
+                  calibrationMode === "ruler"
+                    ? "border-zinc-900 bg-zinc-900 text-white dark:border-zinc-100 dark:bg-zinc-100 dark:text-zinc-900"
+                    : "border-zinc-300 text-zinc-600 dark:border-zinc-700 dark:text-zinc-400"
+                }`}
+              >
+                Handheld / zooming camera
+              </button>
+            </div>
+
+            {calibrationMode === "fixed" ? (
+              <CalibrationCanvas videoUrl={videoUrl} onCalibrated={handleCalibrated} />
+            ) : (
+              <RulerCalibrationPanel
+                videoUrl={videoUrl}
+                onCalibrated={handleRulerCalibrated}
+              />
+            )}
           </section>
         )}
 
@@ -72,7 +174,9 @@ export default function Home() {
             <ProcessingPanel
               videoUrl={videoUrl}
               calibration={calibration}
-              onComplete={setWaveData}
+              onComplete={handleProcessingComplete}
+              rulerCalibration={rulerCalibration}
+              cmPerTick={cmPerTick}
             />
           </section>
         )}
@@ -81,22 +185,25 @@ export default function Home() {
           <section className="flex flex-col gap-6 rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
             <StepLabel step={4} title="Results" />
 
-            <ElevationChart data={waveData} />
+            <ElevationChart data={waveData} points={points} />
 
-            {statsError && (
-              <p className="text-sm text-red-600">
-                Could not compute wave statistics: {statsError}
-              </p>
-            )}
+            {Object.entries(statsErrorsByPoint).map(([pointId, message]) => {
+              const point = points.find((p) => p.id === pointId);
+              return (
+                <p key={pointId} className="text-sm text-red-600">
+                  {point?.label ?? pointId}: could not compute wave statistics — {message}
+                </p>
+              );
+            })}
 
-            {stats && (
+            {Object.keys(statsByPoint).length > 0 && (
               <>
-                <WaveHeightHistogram
-                  waves={stats.waves}
-                  hMean={stats.hMean}
-                  hSignificant={stats.hSignificant}
+                <WaveHeightHistogram points={points} statsByPoint={statsByPoint} />
+                <ResultsSummary
+                  points={points}
+                  waveData={waveData}
+                  statsByPoint={statsByPoint}
                 />
-                <ResultsSummary waveData={waveData} stats={stats} />
               </>
             )}
           </section>
