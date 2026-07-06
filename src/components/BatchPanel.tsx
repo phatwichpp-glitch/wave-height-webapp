@@ -4,7 +4,7 @@ import { useState } from "react";
 import type { BatchConfig, BatchResult } from "@/types/wave";
 import { processBatch, validateBatchConfig } from "@/lib/batchProcessor";
 import { exportBatchAsZip } from "@/lib/batchExport";
-import { downloadTextFile } from "@/lib/csvExport";
+import { downloadBlob, downloadTextFile } from "@/lib/csvExport";
 
 const SAMPLE_CONFIG: BatchConfig = {
   defaultCalibration: {
@@ -30,17 +30,6 @@ const SAMPLE_CONFIG: BatchConfig = {
   ],
   sampleRateHz: 10,
 };
-
-function downloadBlob(blob: Blob, filename: string): void {
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-  URL.revokeObjectURL(url);
-}
 
 export default function BatchPanel() {
   const [files, setFiles] = useState<File[]>([]);

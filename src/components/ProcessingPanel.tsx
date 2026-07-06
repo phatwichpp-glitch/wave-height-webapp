@@ -56,6 +56,7 @@ export default function ProcessingPanel({
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [resultCount, setResultCount] = useState<number | null>(null);
+  const [rulerCheckFailures, setRulerCheckFailures] = useState(0);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -118,6 +119,7 @@ export default function ProcessingPanel({
     setProgress(0);
     setError(null);
     setResultCount(null);
+    setRulerCheckFailures(0);
 
     try {
       const data = await processVideo(video, canvas, calibration, {
@@ -128,6 +130,7 @@ export default function ProcessingPanel({
         sampleRateHz: parsedSampleRate,
         onProgress: (percent) => setProgress(percent),
         onFrameProcessed: handleFrameProcessed,
+        onRulerCheckFailed: () => setRulerCheckFailures((count) => count + 1),
         isPausedRef,
         debugDelayMs: debugMode ? DEBUG_MODE_DELAY_MS : undefined,
         rulerTracking:
@@ -228,6 +231,15 @@ export default function ProcessingPanel({
       )}
 
       {error && <p className="text-sm text-red-600">{error}</p>}
+
+      {rulerCheckFailures > 0 && (
+        <p className="text-sm text-amber-600">
+          Ruler re-calibration was skipped {rulerCheckFailures} time
+          {rulerCheckFailures === 1 ? "" : "s"} (tick fit error too high) — those
+          stretches reused the last good scale, so check that the ruler stayed
+          visible and in focus.
+        </p>
+      )}
 
       {resultCount !== null && !isProcessing && (
         <p className="text-sm text-zinc-600 dark:text-zinc-400">

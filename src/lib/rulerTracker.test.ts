@@ -212,6 +212,9 @@ describe("RulerCalibrationTracker", () => {
     warnSpy.mockRestore();
 
     expect(after).toEqual(before);
+    // The rejection is also exposed as state, so callers can surface a UI warning.
+    expect(tracker.lastUpdateSkipped).toBe(true);
+    expect(tracker.lastSkippedFitError).toBeGreaterThan(0.01);
   });
 
   it("valueCmToPixelY and pixelXForOffset match hand-calculated values", () => {
@@ -228,6 +231,29 @@ describe("RulerCalibrationTracker", () => {
     // currentRulerCenterX = roi.x + roi.width/2 = 100 + 10 = 110.
     expect(tracker.pixelXForOffset(0)).toBeCloseTo(110);
     expect(tracker.pixelXForOffset(3)).toBeCloseTo(140); // 110 + 3*10
+    expect(tracker.pixelXForOffset(-1)).toBeCloseTo(100);
+  });
+
+  it("keeps positive offsets to the right when ruler values increase upward (negative pixelsPerCm)", () => {
+    const roi = { x: 100, y: 0, width: 20, height: 300 };
+    // Values increase upward: valueCm 0 at pixel y=300, valueCm 30 at y=0
+    // -> pixelsPerCm = (0 - 300) / (30 - 0) = -10.
+    const calibration: RulerCalibration = {
+      point1: { x: 110, y: 300, valueCm: 0 },
+      point2: { x: 110, y: 0, valueCm: 30 },
+      roi,
+    };
+    const tracker = new RulerCalibrationTracker(calibration, cmPerTick, 1000, 2.0);
+
+    expect(tracker.getCurrentFit().pixelsPerCm).toBeCloseTo(-10);
+
+    // The signed vertical mapping is unchanged: higher cm value -> smaller pixel y.
+    expect(tracker.valueCmToPixelY(0)).toBeCloseTo(300);
+    expect(tracker.valueCmToPixelY(10)).toBeCloseTo(200);
+
+    // Horizontal placement must use the magnitude: positive offset = right of
+    // center (x=110), never mirrored to the left by the negative sign.
+    expect(tracker.pixelXForOffset(3)).toBeCloseTo(140);
     expect(tracker.pixelXForOffset(-1)).toBeCloseTo(100);
   });
 });

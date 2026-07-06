@@ -6,8 +6,18 @@ to a Web Worker). This is a Next.js companion to the Python `wave_height_analyze
 CLI/library, aimed at giving the same calibration → surface detection → statistics
 pipeline a shareable web UI.
 
-> Under active development. Functionality is being built out in phases; this scaffold
-> currently has the project structure, shared types, and test setup in place.
+Features:
+
+- **Fixed-camera mode** — calibrate once against a known distance, click measurement
+  columns, and extract an elevation time series per point via edge detection.
+- **Handheld/zooming-camera mode** — continuously re-calibrates against a ruler's
+  tick marks to correct vertical drift and zoom (horizontal panning is not corrected;
+  keep the ruler inside its selected region).
+- **Wave statistics** — zero up-crossing analysis (with linear detrending) producing
+  H_max, H_mean, H_rms, H_1/3 (significant height), and mean/significant periods,
+  plus an elevation chart and wave-height histogram.
+- **Exports** — per-point and combined CSVs, a plain-text summary report, and batch
+  processing of multiple videos from a JSON config with a ZIP of all results.
 
 ## Tech Stack
 

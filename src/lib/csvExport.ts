@@ -1,6 +1,7 @@
 import type { MeasurementPoint, WaveDataPoint } from "@/types/wave";
 
-function triggerDownload(blob: Blob, filename: string): void {
+/** Triggers a browser download of an arbitrary Blob (shared by the CSV/report helpers below and the batch ZIP export). */
+export function downloadBlob(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob);
 
   const link = document.createElement("a");
@@ -11,6 +12,11 @@ function triggerDownload(blob: Blob, filename: string): void {
   document.body.removeChild(link);
 
   URL.revokeObjectURL(url);
+}
+
+/** RFC 4180 field escaping: quotes a field only when it contains a comma, quote, or line break, so typical fields stay byte-identical. */
+export function csvEscapeField(value: string): string {
+  return /[",\n\r]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
 }
 
 export function waveDataToCSV(data: WaveDataPoint[]): string {
@@ -54,7 +60,7 @@ export function waveDataToCombinedCSV(
 }
 
 export function downloadCSV(csvContent: string, filename: string): void {
-  triggerDownload(new Blob([csvContent], { type: "text/csv;charset=utf-8;" }), filename);
+  downloadBlob(new Blob([csvContent], { type: "text/csv;charset=utf-8;" }), filename);
 }
 
 // Shares the same download mechanism as downloadCSV, for the plain-text summary report.
@@ -63,5 +69,5 @@ export function downloadTextFile(
   filename: string,
   mimeType: string = "text/plain;charset=utf-8;"
 ): void {
-  triggerDownload(new Blob([content], { type: mimeType }), filename);
+  downloadBlob(new Blob([content], { type: mimeType }), filename);
 }

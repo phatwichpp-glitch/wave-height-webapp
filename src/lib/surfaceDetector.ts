@@ -9,10 +9,19 @@ export function extractColumnProfile(
 ): Float32Array {
   const { data, width, height } = imageData;
   const halfWidth = Math.floor(columnWidth / 2);
-  const xMin = Math.max(0, x - halfWidth);
-  const xMax = Math.min(width - 1, x + halfWidth);
+  // A fractional x (e.g. from ruler-tracking's cm→pixel conversion) would make
+  // every typed-array index below non-integer, reading `undefined` and turning
+  // the whole profile into NaN — so snap to the nearest whole column first.
+  const xCenter = Math.round(x);
+  const xMin = Math.max(0, xCenter - halfWidth);
+  const xMax = Math.min(width - 1, xCenter + halfWidth);
 
   const profile = new Float32Array(height);
+  // Column entirely outside the image: return an all-zero (flat) profile so
+  // downstream edge detection degrades to confidence 0 instead of NaN.
+  if (xMin > xMax) {
+    return profile;
+  }
 
   for (let y = 0; y < height; y++) {
     let sum = 0;

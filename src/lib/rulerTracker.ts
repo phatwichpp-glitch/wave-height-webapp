@@ -186,6 +186,10 @@ export class RulerCalibrationTracker {
   private frameCounter = 0;
   private currentFit: RulerFit;
   private currentRulerCenterX: number;
+  /** True when the most recent update() rejected its fit (error above maxFitError) and kept the previous calibration. */
+  lastUpdateSkipped = false;
+  /** The rejected fit's error (px) from the most recent skipped update(), for surfacing in a UI warning. */
+  lastSkippedFitError = 0;
 
   constructor(
     private initialCalibration: RulerCalibration,
@@ -230,11 +234,16 @@ export class RulerCalibrationTracker {
 
     if (fit.fitError <= this.maxFitError) {
       this.currentFit = fit;
-    } else if (typeof console !== "undefined") {
-      console.warn(
-        `Ruler re-calibration skipped: fit error ${fit.fitError.toFixed(2)}px exceeds ` +
-          `max ${this.maxFitError}px — keeping the previous calibration.`
-      );
+      this.lastUpdateSkipped = false;
+    } else {
+      this.lastUpdateSkipped = true;
+      this.lastSkippedFitError = fit.fitError;
+      if (typeof console !== "undefined") {
+        console.warn(
+          `Ruler re-calibration skipped: fit error ${fit.fitError.toFixed(2)}px exceeds ` +
+            `max ${this.maxFitError}px — keeping the previous calibration.`
+        );
+      }
     }
 
     return this.currentFit;
@@ -254,9 +263,16 @@ export class RulerCalibrationTracker {
     );
   }
 
-  /** Converts a horizontal offset (cm) from the ruler's center column to a pixel X position. */
+  /**
+   * Converts a horizontal offset (cm) from the ruler's center column to a
+   * pixel X position. Uses the magnitude of pixelsPerCm: its sign encodes the
+   * ruler's *vertical* value direction (see valueCmToPixelY) and has no
+   * bearing on horizontal placement — using the signed value would mirror
+   * points left/right whenever the ruler is mounted with values increasing
+   * upward, contradicting MeasurementPoint.xOffsetCm's "positive = right".
+   */
   pixelXForOffset(offsetCm: number): number {
-    return this.currentRulerCenterX + offsetCm * this.currentFit.pixelsPerCm;
+    return this.currentRulerCenterX + offsetCm * Math.abs(this.currentFit.pixelsPerCm);
   }
 
   getCurrentFit(): RulerFit {

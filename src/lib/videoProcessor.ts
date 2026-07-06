@@ -45,21 +45,13 @@ export interface ProcessingOptions {
    * a single fixed `calibration.pixelsPerCm` and each point's fixed xColumn for
    * the whole video. Every point must have `baselineValueCm` set (not just
    * `baselineY`) when this is used — a fixed-pixel baseline would go stale as
-   * soon as the camera's scale changes.
+   * soon as the camera's scale changes. Note only vertical drift/zoom is
+   * corrected: the ruler ROI and its center column are fixed in frame
+   * coordinates, so sustained horizontal panning is not compensated.
    */
   rulerTracking?: RulerTrackingOptions;
-}
-
-/** Clamped column-averaging bounds for a single column, shared by capture-time cropping and the worker's extraction. */
-export function getColumnCropBounds(
-  x: number,
-  columnWidth: number,
-  imageWidth: number
-): { xMin: number; xMax: number; xRelative: number } {
-  const halfWidth = Math.floor(columnWidth / 2);
-  const xMin = Math.max(0, x - halfWidth);
-  const xMax = Math.min(imageWidth - 1, x + halfWidth);
-  return { xMin, xMax, xRelative: x - xMin };
+  /** Called each time a ruler re-calibration check is rejected (fit error above maxFitError) and the previous calibration is kept — for surfacing a warning in the UI. */
+  onRulerCheckFailed?: (fitErrorPx: number) => void;
 }
 
 /**
@@ -67,18 +59,28 @@ export function getColumnCropBounds(
  * with multiple measurement points only needs a single getImageData() call
  * instead of one per point. `relativeX[i]` is `xColumns[i]`'s position within
  * that combined crop.
+ *
+ * Inputs are rounded to whole pixels first: ruler tracking produces fractional
+ * column positions, but getImageData() truncates fractional origins and typed
+ * arrays can't be indexed fractionally, so passing fractions through would
+ * silently misalign (or NaN out) the extracted profiles.
  */
 export function getMultiColumnCropBounds(
   xColumns: number[],
   columnWidth: number,
   imageWidth: number
 ): { xMin: number; xMax: number; relativeX: number[] } {
+  const columns = xColumns.map((x) => Math.round(x));
   const halfWidth = Math.floor(columnWidth / 2);
-  const xMin = Math.max(0, Math.min(...xColumns) - halfWidth);
-  const xMax = Math.min(imageWidth - 1, Math.max(...xColumns) + halfWidth);
-  const relativeX = xColumns.map((x) => x - xMin);
+  const xMin = Math.max(0, Math.min(...columns) - halfWidth);
+  const xMax = Math.min(imageWidth - 1, Math.max(...columns) + halfWidth);
+  const relativeX = columns.map((x) => x - xMin);
   return { xMin, xMax, relativeX };
 }
+
+// HTMLMediaElement.HAVE_CURRENT_DATA — written as a literal because the lib
+// unit tests run under Node, where the HTMLMediaElement global doesn't exist.
+const HAVE_CURRENT_DATA = 2;
 
 export function captureFrameAtTime(
   video: HTMLVideoElement,
@@ -88,6 +90,40 @@ export function captureFrameAtTime(
 ): Promise<ImageData> {
   return new Promise((resolve, reject) => {
     let settled = false;
+
+    function drawAndRead(): ImageData {
+      const ctx = canvas.getContext("2d");
+      if (!ctx) {
+        throw new Error("Could not get a 2D rendering context from the canvas");
+      }
+
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+      if (cropRegion) {
+        // Only read the narrow band covering the measured column(s) instead
+        // of the whole frame, to avoid allocating a full-frame buffer per frame.
+        const { xMin, xMax } = cropRegion;
+        return ctx.getImageData(xMin, 0, xMax - xMin + 1, canvas.height);
+      }
+      return ctx.getImageData(0, 0, canvas.width, canvas.height);
+    }
+
+    // Already positioned at the requested time with a decodable frame: read it
+    // directly. Some browsers (notably Safari) never fire 'seeked' for a seek
+    // to the current position, which would otherwise stall into the timeout.
+    if (
+      video.readyState >= HAVE_CURRENT_DATA &&
+      Math.abs(video.currentTime - timeS) < 1e-6
+    ) {
+      try {
+        resolve(drawAndRead());
+      } catch (error) {
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
+      return;
+    }
 
     function cleanup() {
       clearTimeout(timeoutId);
@@ -102,23 +138,7 @@ export function captureFrameAtTime(
       cleanup();
 
       try {
-        const ctx = canvas.getContext("2d");
-        if (!ctx) {
-          throw new Error("Could not get a 2D rendering context from the canvas");
-        }
-
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-
-        if (cropRegion) {
-          // Only read the narrow band covering the measured column(s) instead
-          // of the whole frame, to avoid allocating a full-frame buffer per frame.
-          const { xMin, xMax } = cropRegion;
-          resolve(ctx.getImageData(xMin, 0, xMax - xMin + 1, canvas.height));
-        } else {
-          resolve(ctx.getImageData(0, 0, canvas.width, canvas.height));
-        }
+        resolve(drawAndRead());
       } catch (error) {
         reject(error instanceof Error ? error : new Error(String(error)));
       }
@@ -164,11 +184,13 @@ function median(values: number[]): number {
 
 /**
  * Auto-detects a baseline (median y over the first ~30 frames) for every
- * point whose baselineY is null. Done per point, independently, on the main
- * thread (cheap enough not to need worker offload) — still water level can
- * differ slightly between points along a flume, so each gets its own baseline
- * rather than sharing one. Not used when ruler tracking is active (see
- * processVideo) since a fixed-pixel baseline would go stale under zoom.
+ * point whose baselineY is null. Each point still gets its own baseline
+ * (still water level can differ slightly between points along a flume), but
+ * every sampled frame is captured once — one seek + one getImageData covering
+ * all pending columns — rather than re-seeking the same 30 frames per point.
+ * Runs on the main thread (cheap enough not to need worker offload). Not used
+ * when ruler tracking is active (see processVideo) since a fixed-pixel
+ * baseline would go stale under zoom.
  */
 async function computeAutoBaselines(
   video: HTMLVideoElement,
@@ -180,38 +202,49 @@ async function computeAutoBaselines(
   sampleRateHz: number
 ): Promise<Map<string, number>> {
   const baselines = new Map<string, number>();
+  const pending: MeasurementPoint[] = [];
 
   for (const point of points) {
     if (point.baselineY !== null) {
       baselines.set(point.id, point.baselineY);
-      continue;
+    } else {
+      pending.push(point);
     }
+  }
 
-    const cropBounds = getColumnCropBounds(point.xColumn, columnWidth, video.videoWidth);
-    const tracker = new SurfaceTracker(
-      cropBounds.xRelative,
-      columnWidth,
-      searchMarginPx,
-      smoothSigma
-    );
-    const samples: number[] = [];
+  if (pending.length === 0) {
+    return baselines;
+  }
 
-    for (let i = 0; i < BASELINE_SAMPLE_FRAMES; i++) {
-      const t = i / sampleRateHz;
-      if (t >= video.duration) {
-        break;
-      }
-      const imageData = await captureFrameAtTime(video, canvas, t, cropBounds);
-      const { yPosition } = tracker.detect(imageData);
-      samples.push(yPosition);
+  const { xMin, xMax, relativeX } = getMultiColumnCropBounds(
+    pending.map((point) => point.xColumn),
+    columnWidth,
+    video.videoWidth
+  );
+  const trackers = pending.map(
+    (_, i) => new SurfaceTracker(relativeX[i], columnWidth, searchMarginPx, smoothSigma)
+  );
+  const samplesByPoint = new Map<string, number[]>(pending.map((point) => [point.id, []]));
+
+  for (let i = 0; i < BASELINE_SAMPLE_FRAMES; i++) {
+    const t = i / sampleRateHz;
+    if (t >= video.duration) {
+      break;
     }
+    const imageData = await captureFrameAtTime(video, canvas, t, { xMin, xMax });
+    pending.forEach((point, k) => {
+      const { yPosition } = trackers[k].detect(imageData);
+      samplesByPoint.get(point.id)!.push(yPosition);
+    });
+  }
 
+  for (const point of pending) {
+    const samples = samplesByPoint.get(point.id)!;
     if (samples.length === 0) {
       throw new Error(
         `Could not read any frames to compute an automatic baseline for point "${point.label}"`
       );
     }
-
     baselines.set(point.id, median(samples));
   }
 
@@ -281,7 +314,13 @@ export async function processVideo(
   const activeRulerTracker = rulerTracker;
 
   function currentXColumn(point: MeasurementPoint): number {
-    return activeRulerTracker ? activeRulerTracker.pixelXForOffset(point.xOffsetCm) : point.xColumn;
+    const x = activeRulerTracker
+      ? activeRulerTracker.pixelXForOffset(point.xOffsetCm)
+      : point.xColumn;
+    // Ruler tracking yields fractional pixel positions, and a drifting camera
+    // can push a point past the frame edge — snap to the nearest valid column
+    // so profile extraction always reads real pixels.
+    return Math.min(video.videoWidth - 1, Math.max(0, Math.round(x)));
   }
 
   const baselines = activeRulerTracker
@@ -348,6 +387,9 @@ export async function processVideo(
           options.rulerTracking!.calibration.roi
         );
         activeRulerTracker.update(roiImageData);
+        if (activeRulerTracker.lastUpdateSkipped) {
+          options.onRulerCheckFailed?.(activeRulerTracker.lastSkippedFitError);
+        }
         for (const point of points) {
           if (point.baselineValueCm !== null) {
             baselines.set(point.id, activeRulerTracker.valueCmToPixelY(point.baselineValueCm));
@@ -368,9 +410,16 @@ export async function processVideo(
         [imageData.data.buffer]
       );
 
-      const pixelsPerCmNow = activeRulerTracker
-        ? activeRulerTracker.getCurrentFit().pixelsPerCm
-        : calibration.pixelsPerCm;
+      // The ruler fit's pixelsPerCm is signed (negative when the ruler's
+      // printed values increase upward in the frame — the usual mounting for a
+      // water-level staff gauge). Elevation below is defined as up-positive in
+      // *pixel* space, so only the magnitude of the scale applies; using the
+      // signed value would flip the whole elevation time series.
+      const pixelsPerCmNow = Math.abs(
+        activeRulerTracker
+          ? activeRulerTracker.getCurrentFit().pixelsPerCm
+          : calibration.pixelsPerCm
+      );
 
       const detections: DetectionResult[] = [];
 

@@ -70,6 +70,32 @@ describe("extractColumnProfile + findSurfaceEdge", () => {
     expect(profile[0]).toBeCloseTo(AIR_VALUE);
     expect(profile[HEIGHT - 1]).toBeCloseTo(WATER_VALUE);
   });
+
+  it("handles a fractional x column without producing NaN (regression: ruler tracking yields fractional pixel positions)", () => {
+    const imageData = makeImageData(WIDTH, HEIGHT, 100);
+
+    // 50.000000000000014-style float noise is what a cm->pixel round trip
+    // actually produces; 50.3 covers a genuinely off-grid position.
+    for (const x of [50.000000000000014, 50.3, 49.5]) {
+      const profile = extractColumnProfile(imageData, x);
+      for (const value of profile) {
+        expect(Number.isFinite(value)).toBe(true);
+      }
+      const { yPosition, confidence } = findSurfaceEdge(profile);
+      expect(Math.abs(yPosition - 100)).toBeLessThanOrEqual(3);
+      expect(confidence).toBeGreaterThan(1.0);
+    }
+  });
+
+  it("returns a flat (all-zero) profile instead of NaN for a column entirely outside the image", () => {
+    const imageData = makeImageData(WIDTH, HEIGHT, 100);
+    const profile = extractColumnProfile(imageData, WIDTH + 50);
+
+    expect(profile.length).toBe(HEIGHT);
+    for (const value of profile) {
+      expect(value).toBe(0);
+    }
+  });
 });
 
 describe("SurfaceTracker", () => {

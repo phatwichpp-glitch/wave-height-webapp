@@ -1,6 +1,7 @@
 import JSZip from "jszip";
 import type { BatchResult } from "@/types/wave";
-import { waveDataToCSV } from "@/lib/csvExport";
+import { csvEscapeField, waveDataToCSV } from "@/lib/csvExport";
+import { buildWaveReportText } from "@/lib/reportText";
 
 function sanitizeName(name: string): string {
   return name.replace(/[^a-zA-Z0-9._-]+/g, "_");
@@ -8,31 +9,6 @@ function sanitizeName(name: string): string {
 
 function folderNameFor(fileName: string): string {
   return sanitizeName(fileName.replace(/\.[^/.]+$/, ""));
-}
-
-function buildReportText(result: BatchResult): string {
-  const lines: string[] = [`Wave Height Analysis Report — ${result.fileName}`, "=".repeat(40), ""];
-  const points = result.points ?? [];
-  const statistics = result.statistics ?? {};
-
-  for (const point of points) {
-    const stats = statistics[point.id];
-    lines.push(`Point: ${point.label}`, "-".repeat(20));
-    if (!stats) {
-      lines.push("  Not enough waves detected for statistics.", "");
-      continue;
-    }
-    lines.push(`  Number of waves analyzed: ${stats.nWaves}`);
-    lines.push(`  Maximum wave height (H_max):        ${stats.hMax.toFixed(2)} cm`);
-    lines.push(`  Mean wave height (H_mean):          ${stats.hMean.toFixed(2)} cm`);
-    lines.push(`  RMS wave height (H_rms):             ${stats.hRms.toFixed(2)} cm`);
-    lines.push(`  Significant wave height (Hs, H1/3):  ${stats.hSignificant.toFixed(2)} cm`);
-    lines.push(`  Mean wave period:                    ${stats.periodMeanS.toFixed(2)} s`);
-    lines.push(`  Significant wave period:             ${stats.periodSignificantS.toFixed(2)} s`);
-    lines.push("");
-  }
-
-  return lines.join("\n");
 }
 
 /**
@@ -72,8 +48,10 @@ export async function exportBatchAsZip(results: BatchResult[]): Promise<Blob> {
       if (stats) {
         comparisonRows.push(
           [
-            result.fileName,
-            point.label,
+            // File names and labels are user-controlled free text — escape
+            // them so a comma or quote can't shift every column after it.
+            csvEscapeField(result.fileName),
+            csvEscapeField(point.label),
             stats.hSignificant.toFixed(2),
             stats.hMax.toFixed(2),
             stats.hMean.toFixed(2),
@@ -83,7 +61,10 @@ export async function exportBatchAsZip(results: BatchResult[]): Promise<Blob> {
       }
     }
 
-    folder.file("summary_report.txt", buildReportText(result));
+    folder.file(
+      "summary_report.txt",
+      buildWaveReportText(points, statistics, `Wave Height Analysis Report — ${result.fileName}`)
+    );
   }
 
   zip.file("comparison_summary.csv", comparisonRows.join("\n"));

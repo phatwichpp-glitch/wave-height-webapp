@@ -19,6 +19,7 @@ function createMockVideo(options: {
   videoHeight: number;
   duration: number;
   fireSeeked?: boolean;
+  readyState?: number;
 }) {
   const listeners: Record<string, Listener[]> = {};
   let currentTimeValue = 0;
@@ -34,6 +35,7 @@ function createMockVideo(options: {
     videoWidth: options.videoWidth,
     videoHeight: options.videoHeight,
     duration: options.duration,
+    readyState: options.readyState ?? 0,
     get currentTime() {
       return currentTimeValue;
     },
@@ -289,6 +291,21 @@ describe("captureFrameAtTime", () => {
     await vi.runAllTimersAsync();
     await assertion;
   });
+
+  it("captures immediately without waiting for 'seeked' when already at the requested time (Safari never fires it for a same-position seek)", async () => {
+    const video = createMockVideo({
+      videoWidth: 100,
+      videoHeight: 200,
+      duration: 10,
+      fireSeeked: false, // a same-position seek that never fires 'seeked'
+      readyState: 2, // HAVE_CURRENT_DATA
+    });
+    const canvas = createMockCanvas(100, 200);
+
+    // currentTime starts at 0, so capturing t=0 must not depend on 'seeked'.
+    const imageData = await captureFrameAtTime(video, canvas, 0);
+    expect(imageData.height).toBe(200);
+  });
 });
 
 describe("getMultiColumnCropBounds", () => {
@@ -301,6 +318,22 @@ describe("getMultiColumnCropBounds", () => {
 
     // Mapping each relative offset back onto the crop's origin must recover
     // the original absolute column positions.
+    expect(xMin + relativeX[0]).toBe(50);
+    expect(xMin + relativeX[1]).toBe(800);
+  });
+
+  it("snaps fractional column positions to whole pixels (regression: ruler tracking's cm->pixel conversion produces fractions)", () => {
+    const { xMin, xMax, relativeX } = getMultiColumnCropBounds(
+      [50.000000000000014, 800.4],
+      3,
+      1000
+    );
+
+    expect(Number.isInteger(xMin)).toBe(true);
+    expect(Number.isInteger(xMax)).toBe(true);
+    for (const rel of relativeX) {
+      expect(Number.isInteger(rel)).toBe(true);
+    }
     expect(xMin + relativeX[0]).toBe(50);
     expect(xMin + relativeX[1]).toBe(800);
   });
@@ -542,6 +575,68 @@ describe("processVideo", () => {
     for (const sample of result.p1) {
       expect(Math.abs(sample.elevationCm - -1.0)).toBeLessThanOrEqual(0.1);
       expect(Math.abs(sample.elevationCm - -2.0)).toBeGreaterThan(0.5);
+    }
+  });
+
+  it("handles a fractional point offset and a ruler whose values increase upward (negative pixelsPerCm) — regression for NaN profiles and a flipped elevation sign", async () => {
+    const rulerRoi = { x: 0, y: 0, width: 20, height: 300 };
+    const rulerSpacingPx = 20;
+    const edgeY = 120;
+
+    const video = createMockVideo({ videoWidth: 60, videoHeight: 300, duration: 1 });
+    const canvas = createMockCanvasForRulerTest(60, 300, rulerRoi, rulerSpacingPx, edgeY);
+
+    const staleCalibration: CalibrationData = {
+      point1: { x: 0, y: 0 },
+      point2: { x: 0, y: 100 },
+      knownDistanceCm: 10,
+      pixelsPerCm: 10,
+    };
+
+    // Values increase UPWARD in the frame (the usual staff-gauge mounting):
+    // pixel y grows downward, so pixelsPerCm = (0 - 200) / (10 - 0) = -20.
+    const rulerCalibration: RulerCalibration = {
+      point1: { x: 10, y: 200, valueCm: 0 },
+      point2: { x: 10, y: 0, valueCm: 10 },
+      roi: rulerRoi,
+    };
+
+    const point: MeasurementPoint = {
+      id: "p1",
+      xColumn: 999,
+      label: "Point 1",
+      color: "#3b82f6",
+      baselineY: null,
+      baselineValueCm: 5, // -> baselineY = 200 + (5 - 0) * -20 = 100
+      // Fractional on purpose: currentXColumn = 10 + 1.37 * |−20| = 37.4 px.
+      // Before the rounding fix this produced NaN profiles; before the
+      // Math.abs fix a positive offset would land LEFT of the ruler (x < 10).
+      xOffsetCm: 1.37,
+    };
+
+    const result = await processVideo(video, canvas, staleCalibration, {
+      points: [point],
+      columnWidth: 3,
+      searchMarginPx: 40,
+      smoothSigma: 2.0,
+      sampleRateHz: 10,
+      rulerTracking: {
+        calibration: rulerCalibration,
+        cmPerTick: 1,
+        checkIntervalFrames: 1,
+        maxFitError: 5,
+      },
+    });
+
+    expect(result.p1.length).toBe(10);
+
+    // Edge at y=120 sits BELOW the baseline (y=100), so the physical
+    // elevation is negative: (100-120)/|−20| = -1.0. The signed formula
+    // would report +1.0 instead — ruled out explicitly.
+    for (const sample of result.p1) {
+      expect(Number.isFinite(sample.elevationCm)).toBe(true);
+      expect(Math.abs(sample.elevationCm - -1.0)).toBeLessThanOrEqual(0.1);
+      expect(Math.abs(sample.elevationCm - 1.0)).toBeGreaterThan(0.5);
     }
   });
 });

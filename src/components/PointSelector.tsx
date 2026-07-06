@@ -135,7 +135,12 @@ export default function PointSelector({
       return null;
     }
     const { point1, point2, roi } = rulerCalibration;
-    const pixelsPerCm = (point2.y - point1.y) / (point2.valueCm - point1.valueCm);
+    // Magnitude only: the raw ratio is negative when ruler values increase
+    // upward, but xOffsetCm is defined as "positive = right" regardless of the
+    // ruler's vertical direction (matching RulerCalibrationTracker.pixelXForOffset).
+    const pixelsPerCm = Math.abs(
+      (point2.y - point1.y) / (point2.valueCm - point1.valueCm)
+    );
     const centerX = roi.x + roi.width / 2;
     return { pixelsPerCm, centerX };
   }

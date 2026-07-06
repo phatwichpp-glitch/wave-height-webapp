@@ -75,6 +75,49 @@ describe("exportBatchAsZip", () => {
     expect(errorTxt).toContain("Simulated failure");
   });
 
+  it("escapes commas and quotes in file names and point labels in the comparison CSV", async () => {
+    const results: BatchResult[] = [
+      {
+        fileName: "trial 3, run 2.mp4",
+        status: "done",
+        points: [
+          {
+            id: "p1",
+            xColumn: 50,
+            label: 'Point "A", left',
+            color: "#3b82f6",
+            baselineY: 100,
+            baselineValueCm: null,
+            xOffsetCm: 0,
+          },
+        ],
+        rawData: { p1: [{ timeS: 0, elevationCm: 1, confidence: 3 }] },
+        statistics: {
+          p1: {
+            nWaves: 5,
+            hMax: 4,
+            hMean: 3,
+            hRms: 3.1,
+            hSignificant: 3.8,
+            periodMeanS: 1.0,
+            periodSignificantS: 1.1,
+            waves: [],
+          },
+        },
+      },
+    ];
+
+    const blob = await exportBatchAsZip(results);
+    const zip = await JSZip.loadAsync(blob);
+    const comparisonCsv = await zip.file("comparison_summary.csv")?.async("string");
+
+    // RFC 4180: fields containing commas/quotes are quoted, inner quotes doubled —
+    // so the row still parses into exactly 6 columns.
+    expect(comparisonCsv).toContain(
+      '"trial 3, run 2.mp4","Point ""A"", left",3.80,4.00,3.00,1.00'
+    );
+  });
+
   it("still produces a (empty) comparison CSV header when given no results", async () => {
     const blob = await exportBatchAsZip([]);
     const zip = await JSZip.loadAsync(blob);

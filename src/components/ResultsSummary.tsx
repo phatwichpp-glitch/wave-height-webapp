@@ -7,6 +7,7 @@ import {
   waveDataToCSV,
   waveDataToCombinedCSV,
 } from "@/lib/csvExport";
+import { buildWaveReportText } from "@/lib/reportText";
 
 interface ResultsSummaryProps {
   points: MeasurementPoint[];
@@ -17,32 +18,6 @@ interface ResultsSummaryProps {
 
 function slugify(label: string): string {
   return label.toLowerCase().trim().replace(/\s+/g, "-");
-}
-
-function buildReportText(
-  points: MeasurementPoint[],
-  statsByPoint: Record<string, WaveStatistics>
-): string {
-  const lines: string[] = ["Wave Height Analysis Report", "=".repeat(40), ""];
-
-  for (const point of points) {
-    const stats = statsByPoint[point.id];
-    lines.push(`Point: ${point.label}`, "-".repeat(20));
-    if (!stats) {
-      lines.push("  Not enough waves detected for statistics.", "");
-      continue;
-    }
-    lines.push(`  Number of waves analyzed: ${stats.nWaves}`);
-    lines.push(`  Maximum wave height (H_max):        ${stats.hMax.toFixed(2)} cm`);
-    lines.push(`  Mean wave height (H_mean):          ${stats.hMean.toFixed(2)} cm`);
-    lines.push(`  RMS wave height (H_rms):             ${stats.hRms.toFixed(2)} cm`);
-    lines.push(`  Significant wave height (Hs, H1/3):  ${stats.hSignificant.toFixed(2)} cm`);
-    lines.push(`  Mean wave period:                    ${stats.periodMeanS.toFixed(2)} s`);
-    lines.push(`  Significant wave period:             ${stats.periodSignificantS.toFixed(2)} s`);
-    lines.push("");
-  }
-
-  return lines.join("\n");
 }
 
 export default function ResultsSummary({
@@ -66,7 +41,7 @@ export default function ResultsSummary({
   }
 
   function handleDownloadReport() {
-    downloadTextFile(buildReportText(points, statsByPoint), `${fileNamePrefix}_report.txt`);
+    downloadTextFile(buildWaveReportText(points, statsByPoint), `${fileNamePrefix}_report.txt`);
   }
 
   return (

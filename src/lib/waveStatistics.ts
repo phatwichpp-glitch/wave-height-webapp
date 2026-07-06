@@ -1,8 +1,34 @@
 import type { WaveEvent, WaveStatistics } from "@/types/wave";
 
+/**
+ * Removes the least-squares linear trend (fit over sample index, which is
+ * equivalent to fitting over time for the uniformly sampled data this app
+ * produces). Mean removal alone is not enough here: a slowly drifting
+ * baseline — e.g. gradual camera sag over a long clip — would otherwise leak
+ * into every wave's crest-to-trough height and bias the statistics upward.
+ */
 export function detrend(elevationCm: number[]): number[] {
-  const mean = elevationCm.reduce((sum, v) => sum + v, 0) / elevationCm.length;
-  return elevationCm.map((v) => v - mean);
+  const n = elevationCm.length;
+  if (n === 0) {
+    return [];
+  }
+  if (n === 1) {
+    return [0];
+  }
+
+  const indexMean = (n - 1) / 2;
+  const valueMean = mean(elevationCm);
+
+  let covariance = 0;
+  let indexVariance = 0;
+  for (let i = 0; i < n; i++) {
+    const dIndex = i - indexMean;
+    covariance += dIndex * (elevationCm[i] - valueMean);
+    indexVariance += dIndex * dIndex;
+  }
+  const slope = covariance / indexVariance;
+
+  return elevationCm.map((v, i) => v - (valueMean + slope * (i - indexMean)));
 }
 
 function maxOf(values: number[]): number {
