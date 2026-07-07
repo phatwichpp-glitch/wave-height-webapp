@@ -200,7 +200,9 @@ export async function processBatch(
         try {
           const timeS = pointData.map((d) => d.timeS);
           const elevationCm = pointData.map((d) => d.elevationCm);
-          statistics[point.id] = computeWaveStatistics(timeS, elevationCm);
+          statistics[point.id] = computeWaveStatistics(timeS, elevationCm, {
+            sampleRateHz: batchConfig.sampleRateHz,
+          });
         } catch {
           // Not enough waves detected for this point — omit it from
           // statistics but keep its raw data so it's still exportable.

@@ -15,7 +15,13 @@ import ProcessingControls from "@/components/ProcessingControls";
 interface ProcessingPanelProps {
   videoUrl: string;
   calibration: CalibrationData;
-  onComplete: (data: Record<string, WaveDataPoint[]>, points: MeasurementPoint[]) => void;
+  onComplete: (
+    data: Record<string, WaveDataPoint[]>,
+    points: MeasurementPoint[],
+    sampleRateHz: number,
+    /** The user's optional expected-wave-frequency hint (Hz), or null if left blank — used downstream to pick a detrend window and restrict the FFT peak search. */
+    expectedFrequencyHz: number | null
+  ) => void;
   /** When set (from RulerCalibrationPanel), points track the ruler continuously instead of using a fixed pixel column/baseline. */
   rulerCalibration?: RulerCalibration | null;
   cmPerTick?: number;
@@ -48,6 +54,7 @@ export default function ProcessingPanel({
   const [isMetadataReady, setIsMetadataReady] = useState(false);
   const [points, setPoints] = useState<MeasurementPoint[]>([]);
   const [sampleRateHz, setSampleRateHz] = useState("10");
+  const [expectedFrequencyHz, setExpectedFrequencyHz] = useState("");
   const [isProcessing, setIsProcessing] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [debugMode, setDebugMode] = useState(false);
@@ -81,6 +88,16 @@ export default function ProcessingPanel({
 
   const parsedSampleRate = parseFloat(sampleRateHz);
 
+  // Optional: blank is valid (means "no hint"), but a non-blank value must be
+  // a usable positive number or processing is blocked — a silently-ignored
+  // typo here would be confusing since it changes detrending/FFT-search behavior.
+  const trimmedExpectedFrequency = expectedFrequencyHz.trim();
+  const parsedExpectedFrequency =
+    trimmedExpectedFrequency === "" ? null : parseFloat(trimmedExpectedFrequency);
+  const hasInvalidExpectedFrequency =
+    trimmedExpectedFrequency !== "" &&
+    (!Number.isFinite(parsedExpectedFrequency) || (parsedExpectedFrequency ?? 0) <= 0);
+
   const missingBaselines =
     !!rulerCalibration && points.some((point) => point.baselineValueCm === null);
 
@@ -89,6 +106,7 @@ export default function ProcessingPanel({
     !isProcessing &&
     points.length > 0 &&
     !missingBaselines &&
+    !hasInvalidExpectedFrequency &&
     Number.isFinite(parsedSampleRate) &&
     parsedSampleRate > 0;
 
@@ -146,7 +164,7 @@ export default function ProcessingPanel({
 
       const totalPoints = Object.values(data).reduce((sum, arr) => sum + arr.length, 0);
       setResultCount(totalPoints);
-      onComplete(data, points);
+      onComplete(data, points, parsedSampleRate, parsedExpectedFrequency);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -169,6 +187,12 @@ export default function ProcessingPanel({
       {missingBaselines && (
         <p className="text-sm text-amber-600">
           Every point needs a still-water baseline entered in cm before processing can start.
+        </p>
+      )}
+
+      {hasInvalidExpectedFrequency && (
+        <p className="text-sm text-amber-600">
+          Expected wave frequency must be a positive number, or left blank.
         </p>
       )}
 
@@ -198,6 +222,20 @@ export default function ProcessingPanel({
             value={sampleRateHz}
             onChange={(event) => setSampleRateHz(event.target.value)}
             className="w-28 rounded border border-zinc-300 px-2 py-1 dark:border-zinc-700 dark:bg-zinc-900"
+          />
+        </label>
+
+        <label className="flex flex-col gap-1 text-sm">
+          Expected wave frequency (Hz, optional)
+          <input
+            type="number"
+            min={0}
+            step="any"
+            value={expectedFrequencyHz}
+            onChange={(event) => setExpectedFrequencyHz(event.target.value)}
+            placeholder="e.g. 0.4"
+            aria-label="Expected wave frequency in Hz"
+            className="w-40 rounded border border-zinc-300 px-2 py-1 dark:border-zinc-700 dark:bg-zinc-900"
           />
         </label>
 

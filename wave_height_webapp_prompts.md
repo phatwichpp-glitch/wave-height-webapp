@@ -692,6 +692,89 @@ export async function exportBatchAsZip(results: BatchResult[]): Promise<Blob>
 
 ---
 
+## Phase 11: แก้ Period Bias — Proper Detrend + FFT-Based Period Validation
+
+```
+ทำงานต่อจากโปรเจกต์ wave-height-webapp (ต่อจาก Phase 10 หรือเฟสล่าสุดที่ทำถึง) แก้ไข src/lib/waveStatistics.ts และเพิ่มการตรวจสอบคาบคลื่นด้วยวิธี spectral analysis
+
+บริบท/ปัญหาที่พบจากการใช้งานจริง: เมื่อสัญญาณ elevation มี amplitude เล็ก (sub-cm) และมี noise หรือ slow drift หลงเหลืออยู่บ้าง (แม้เพียงเล็กน้อย) วิธี zero up-crossing ที่ detrend ด้วยการลบ global mean แบบเดิม จะทำให้บางรอบคลื่นจริงไม่ตัดผ่านเส้นศูนย์ ทำให้ 2 รอบคลื่นจริงถูกนับรวมเป็นคลื่น 1 ลูกที่มีคาบยาวผิดปกติ ส่งผลให้คาบเฉลี่ยที่คำนวณได้สูงกว่าคาบจริงของคลื่นอย่างเป็นระบบ (ไม่ใช่ random error)
+
+ส่วนที่ 1 — แก้ src/lib/waveStatistics.ts เพิ่มฟังก์ชัน:
+
+export function movingAverageDetrend(
+  elevationCm: number[],
+  sampleRateHz: number,
+  windowSeconds: number
+): number[]
+- คำนวณ windowSize = Math.round(windowSeconds * sampleRateHz) ปัดให้เป็นเลขคี่เสมอ (บวก 1 ถ้าเป็นเลขคู่) เพื่อให้ window มี center แท้จริง
+- คำนวณ moving average แบบ centered ด้วย prefix sum (คำนวณ cumulative sum ก่อนแล้วลบกัน O(n) ไม่ใช่ loop ซ้อน O(n*windowSize) เพื่อ performance)
+- คืนค่า array ผลต่าง (originalValue - localMovingAverage) ที่แต่ละจุด — จัดการขอบสัญญาณ (ต้นและท้าย array ที่ window ไม่ครบ) ด้วยการลด window ให้พอดีกับข้อมูลที่มี ไม่ pad ด้วยศูนย์ (ป้องกัน edge artifact)
+
+แก้ computeWaveStatistics ให้รับ parameter เพิ่ม (มี default value เพื่อไม่ทำลาย backward compatibility กับโค้ดเดิมที่เรียกใช้อยู่):
+
+export function computeWaveStatistics(
+  timeS: number[],
+  elevationCm: number[],
+  options?: {
+    sampleRateHz?: number;
+    detrendMethod?: 'global-mean' | 'moving-average';  // default 'moving-average' ถ้ามี sampleRateHz ให้, ไม่งั้น fallback 'global-mean'
+    detrendWindowSeconds?: number;  // default: ถ้าไม่ระบุ ให้ประมาณจากคาบเฉลี่ยที่หาได้รอบแรกด้วย global-mean แล้วคูณ 3 (bootstrap estimate)
+  }
+): WaveStatistics
+- ถ้า detrendMethod เป็น 'moving-average' และมี sampleRateHz: เรียก movingAverageDetrend แทนการลบ global mean แบบเดิมใน zeroUpCrossingWaves (ต้องแก้ zeroUpCrossingWaves ให้รับสัญญาณที่ detrend มาแล้วจากภายนอกได้ ไม่ detrend ซ้ำเองข้างใน หรือแยกฟังก์ชัน detrend ออกมาเป็นพารามิเตอร์ที่ส่งเข้าไปแทน — เลือกวิธีที่โครงสร้างโค้ด clean กว่าและอธิบายเหตุผลใน comment)
+
+ส่วนที่ 2 — เพิ่ม FFT-based period estimation:
+
+ติดตั้ง dependency: fft.js (lightweight FFT library สำหรับ JS ไม่ต้องเขียน FFT เองซึ่งเสี่ยง bug เยอะ)
+
+export interface SpectralPeriodResult {
+  dominantFrequencyHz: number;
+  dominantPeriodS: number;
+  spectrum: { frequencyHz: number; power: number }[];  // เก็บไว้เผื่อ plot กราฟ spectrum ให้ผู้ใช้ดูด้วยตาใน UI
+}
+
+export function estimateDominantPeriod(
+  elevationCm: number[],
+  sampleRateHz: number,
+  detrendWindowSeconds?: number,
+  frequencyRangeHz?: [number, number]  // ถ้าผู้ใช้รู้ความถี่คร่าว ๆ ที่คาดไว้ (เช่นจากการตั้งค่า wave flume) ให้จำกัดการค้นหาเฉพาะช่วงนี้ ลด false peak จาก noise/drift ความถี่ต่ำมาก ๆ
+): SpectralPeriodResult
+- detrend สัญญาณก่อนด้วย movingAverageDetrend (หรือ global mean ถ้าไม่ระบุ window) — สำคัญมาก ถ้าไม่ detrend ก่อน FFT จะมี peak ที่ความถี่ 0 (DC) มหาศาลบดบัง peak คลื่นจริง
+- ใช้ Hann window function คูณกับสัญญาณก่อนเข้า FFT (ลด spectral leakage มาตรฐานสำหรับสัญญาณความยาวจำกัด)
+- เรียก fft.js คำนวณ FFT, คำนวณ power spectrum (|FFT|^2) ของแต่ละ bin ความถี่
+- ถ้ามี frequencyRangeHz ให้จำกัดการหา peak เฉพาะช่วงนั้น ไม่งั้นค้นทั้งหมด (ยกเว้น bin 0 ที่เป็น DC ให้ตัดทิ้งเสมอไม่ว่าจะจำกัดช่วงหรือไม่)
+- หา bin ที่มี power สูงสุดในช่วงที่ค้นหา = dominant frequency
+- แปลงเป็น period (1/frequency)
+- คืนค่า SpectralPeriodResult พร้อม spectrum ทั้งหมดสำหรับ plot
+
+ส่วนที่ 3 — แก้ src/components/ResultsSummary.tsx และ ProcessingPanel:
+- เพิ่ม input (optional) "ความถี่คลื่นที่คาดไว้ (Hz)" ในหน้าตั้งค่าก่อนประมวลผล (ผู้ใช้รู้ค่านี้อยู่แล้วจากการตั้งค่า wave flume เช่น 0.4Hz) — ใช้ค่านี้ไปคำนวณ detrendWindowSeconds default (เช่น 3/frequency) และ frequencyRangeHz (เช่น ±50% รอบความถี่ที่คาดไว้) ถ้าผู้ใช้ไม่กรอกก็ยังทำงานได้แบบไม่มี hint (ใช้ bootstrap estimate ตามที่ระบุไว้ในส่วนที่ 1)
+- แสดงผลเปรียบเทียบสองค่าคาบในตารางสรุป: "คาบเฉลี่ย (Zero up-crossing)" กับ "คาบเด่น (FFT)" คู่กัน ต่อ 1 จุดวัด
+- ถ้าค่าสองวิธีต่างกันเกิน 20% (เทียบเป็น % จากค่าน้อยกว่า) ให้แสดง warning banner เล็ก ๆ สีเหลือง/ส้ม ข้อความประมาณ "ค่าคาบจาก 2 วิธีต่างกันมาก อาจมี noise หรือ drift รบกวนสัญญาณอยู่ แนะนำตรวจสอบตำแหน่งจุดวัดหรือลด noise เพิ่มเติม" (ไม่ต้อง block การแสดงผล แค่เตือน)
+- เพิ่มกราฟ spectrum เล็ก ๆ (ใช้ recharts เหมือนกราฟอื่น) แสดง power vs frequency ให้ผู้ใช้เห็นด้วยตาว่า peak เด่นชัดแค่ไหน (peak แหลมชัดเจน = สัญญาณสะอาด, peak กว้าง/หลาย peak ใกล้กัน = สัญญาณยังมี noise เยอะ)
+
+เขียน unit test ในไฟล์ src/lib/waveStatistics.test.ts (แก้เพิ่มจากเดิม):
+
+- test movingAverageDetrend: สร้างสัญญาณ sine wave บริสุทธิ์ + slow linear drift (เช่น drift 0.1cm ต่อวินาที) → test ว่าหลัง movingAverageDetrend (window เหมาะสม) ผลลัพธ์ใกล้เคียง sine wave เดิมที่ไม่มี drift มาก (error เทียบกับ sine wave บริสุทธิ์ไม่เกิน 10%) ในขณะที่ detrend แบบ global-mean แบบเดิมจะยังมี drift หลงเหลือชัดเจน (ทำเทสเปรียบเทียบสองวิธีในเทสเดียวกันให้เห็นความต่าง)
+
+- test estimateDominantPeriod: สร้าง sine wave บริสุทธิ์ period ที่รู้ค่าแน่นอน (เช่น 2.5s ตรงกับ 0.4Hz) sample rate 30Hz duration อย่างน้อย 60 วินาที (ต้องยาวพอให้ FFT resolution ละเอียดพอจะแยกความถี่ใกล้เคียงกันได้) → test ว่า dominantPeriodS ที่ได้ใกล้เคียง 2.5s มาก (error ไม่เกิน 5%)
+
+- **เทสสำคัญที่สุดของเฟสนี้**: สร้างสัญญาณจำลองสถานการณ์จริงที่เจอปัญหา — sine wave amplitude เล็ก (เช่น 0.5cm) + slow drift + random noise เล็กน้อย (จำลอง noise ระดับ sub-pixel จากการตรวจจับจริง) → test ว่า:
+  (a) zero up-crossing period แบบเดิม (global-mean detrend) ให้ค่าคาบสูงเกินจริงชัดเจน (เกิน 20% ของคาบจริง) — พิสูจน์ว่าปัญหาที่ผู้ใช้เจอ reproduce ได้ในเทส
+  (b) zero up-crossing period ที่ใช้ moving-average detrend ใหม่ ให้ค่าใกล้เคียงคาบจริงมากกว่า (error ไม่เกิน 15%)
+  (c) estimateDominantPeriod (FFT) ให้ค่าใกล้เคียงคาบจริงมากที่สุดในสามวิธี (error ไม่เกิน 10%)
+
+- test ว่า frequencyRangeHz จำกัดการค้นหาถูกต้อง (สร้างสัญญาณที่มี 2 ความถี่ปนกัน ความถี่หนึ่งอยู่นอกช่วงที่ระบุ ทดสอบว่า estimateDominantPeriod เจอ peak เฉพาะความถี่ที่อยู่ในช่วงที่กำหนดเท่านั้น ไม่ไปเจอความถี่นอกช่วงที่อาจมี power สูงกว่า)
+
+รันเทสด้วย `npm run test` รายงานผลทุกข้อ โดยเฉพาะเทส (a)(b)(c) ในข้อ "เทสสำคัญที่สุด" ต้องแสดงตัวเลข error ของแต่ละวิธีให้เห็นชัดเจนว่าวิธีใหม่ดีขึ้นจริงเทียบกับวิธีเดิมเท่าไหร่
+
+ทดสอบด้วยมือ (`npm run dev`) กับวิดีโอจริงที่เจอปัญหา (H35cm/0.4Hz wave flume) กรอกความถี่คาดไว้ 0.4Hz ในช่องใหม่ แล้วเทียบค่าคาบทั้งสองวิธีที่แสดงผล ว่าตอนนี้ใกล้เคียง 2.5s ทั้งคู่หรือยัง
+```
+
+**เกณฑ์ผ่านเฟส:** unit test ผ่านทั้งหมด โดยเฉพาะเทสที่ reproduce ปัญหาเดิมได้และพิสูจน์ว่าวิธีใหม่แก้ได้จริง (ไม่ใช่แค่เทสผ่านเฉย ๆ ต้องเห็นตัวเลขเปรียบเทียบชัดเจนในรายงานผล), ทดสอบด้วยมือกับวิดีโอจริงแล้วค่าคาบทั้งสองวิธีต้องใกล้เคียง 2.5s (ความถี่ 0.4Hz) มากกว่าที่เคยได้ 3.25s+ อย่างชัดเจน
+
+---
+
 ## หมายเหตุสำคัญเฉพาะเวอร์ชัน Client-Side
 
 - **ความเร็วในการประมวลผล**: การ seek วิดีโอทีละเฟรมผ่าน `currentTime` มี overhead กว่าการอ่านไฟล์ตรง ๆ แบบ Python/OpenCV พอสมควร วิดีโอยาวหรือ sample rate สูงอาจใช้เวลานานในเบราว์เซอร์ — ถ้าพบว่าช้าเกินไปในทางปฏิบัติ ให้พิจารณาลด sampleRateHz ลง หรือขอ prompt เฟสเสริมสำหรับใช้ `requestVideoFrameCallback` (แม่นยำกว่าและเร็วกว่าการ seek แต่รองรับเฉพาะ Chromium-based browsers)

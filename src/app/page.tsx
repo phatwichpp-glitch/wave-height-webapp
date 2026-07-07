@@ -16,7 +16,7 @@ import ProcessingPanel from "@/components/ProcessingPanel";
 import ElevationChart from "@/components/ElevationChart";
 import WaveHeightHistogram from "@/components/WaveHeightHistogram";
 import ResultsSummary from "@/components/ResultsSummary";
-import { computeWaveStatistics } from "@/lib/waveStatistics";
+import { computeWaveStatistics, estimateDominantPeriod, type SpectralPeriodResult } from "@/lib/waveStatistics";
 
 type CalibrationMode = "fixed" | "ruler";
 
@@ -42,6 +42,8 @@ export default function Home() {
   const [cmPerTick, setCmPerTick] = useState<number | undefined>(undefined);
   const [waveData, setWaveData] = useState<Record<string, WaveDataPoint[]> | null>(null);
   const [points, setPoints] = useState<MeasurementPoint[]>([]);
+  const [processingSampleRateHz, setProcessingSampleRateHz] = useState<number | null>(null);
+  const [expectedFrequencyHz, setExpectedFrequencyHz] = useState<number | null>(null);
 
   function handleVideoLoaded(url: string) {
     setVideoUrl(url);
@@ -71,39 +73,73 @@ export default function Home() {
 
   function handleProcessingComplete(
     data: Record<string, WaveDataPoint[]>,
-    usedPoints: MeasurementPoint[]
+    usedPoints: MeasurementPoint[],
+    sampleRateHz: number,
+    expectedFreqHz: number | null
   ) {
     setWaveData(data);
     setPoints(usedPoints);
+    setProcessingSampleRateHz(sampleRateHz);
+    setExpectedFrequencyHz(expectedFreqHz);
   }
 
-  const { statsByPoint, statsErrorsByPoint } = useMemo((): {
-    statsByPoint: Record<string, WaveStatistics>;
-    statsErrorsByPoint: Record<string, string>;
-  } => {
-    const statsByPoint: Record<string, WaveStatistics> = {};
-    const statsErrorsByPoint: Record<string, string> = {};
+  const { statsByPoint, statsErrorsByPoint, spectralByPoint, spectralErrorsByPoint } =
+    useMemo((): {
+      statsByPoint: Record<string, WaveStatistics>;
+      statsErrorsByPoint: Record<string, string>;
+      spectralByPoint: Record<string, SpectralPeriodResult>;
+      spectralErrorsByPoint: Record<string, string>;
+    } => {
+      const statsByPoint: Record<string, WaveStatistics> = {};
+      const statsErrorsByPoint: Record<string, string> = {};
+      const spectralByPoint: Record<string, SpectralPeriodResult> = {};
+      const spectralErrorsByPoint: Record<string, string> = {};
 
-    if (!waveData) {
-      return { statsByPoint, statsErrorsByPoint };
-    }
-
-    for (const point of points) {
-      const pointData = waveData[point.id];
-      if (!pointData) {
-        continue;
+      if (!waveData || processingSampleRateHz === null) {
+        return { statsByPoint, statsErrorsByPoint, spectralByPoint, spectralErrorsByPoint };
       }
-      try {
+
+      // A user-supplied expected frequency sizes the detrend window (3
+      // cycles) and restricts the FFT peak search to a ±50% band around it —
+      // both fall back to automatic estimates below when the hint is absent.
+      const detrendWindowSeconds =
+        expectedFrequencyHz !== null ? 3 / expectedFrequencyHz : undefined;
+      const frequencyRangeHz: [number, number] | undefined =
+        expectedFrequencyHz !== null
+          ? [expectedFrequencyHz * 0.5, expectedFrequencyHz * 1.5]
+          : undefined;
+
+      for (const point of points) {
+        const pointData = waveData[point.id];
+        if (!pointData) {
+          continue;
+        }
         const timeS = pointData.map((d) => d.timeS);
         const elevationCm = pointData.map((d) => d.elevationCm);
-        statsByPoint[point.id] = computeWaveStatistics(timeS, elevationCm);
-      } catch (err) {
-        statsErrorsByPoint[point.id] = err instanceof Error ? err.message : String(err);
-      }
-    }
 
-    return { statsByPoint, statsErrorsByPoint };
-  }, [waveData, points]);
+        try {
+          statsByPoint[point.id] = computeWaveStatistics(timeS, elevationCm, {
+            sampleRateHz: processingSampleRateHz,
+            detrendWindowSeconds,
+          });
+        } catch (err) {
+          statsErrorsByPoint[point.id] = err instanceof Error ? err.message : String(err);
+        }
+
+        try {
+          spectralByPoint[point.id] = estimateDominantPeriod(
+            elevationCm,
+            processingSampleRateHz,
+            detrendWindowSeconds,
+            frequencyRangeHz
+          );
+        } catch (err) {
+          spectralErrorsByPoint[point.id] = err instanceof Error ? err.message : String(err);
+        }
+      }
+
+      return { statsByPoint, statsErrorsByPoint, spectralByPoint, spectralErrorsByPoint };
+    }, [waveData, points, processingSampleRateHz, expectedFrequencyHz]);
 
   return (
     <div className="flex flex-1 justify-center bg-zinc-50 dark:bg-black">
@@ -203,6 +239,7 @@ export default function Home() {
                   points={points}
                   waveData={waveData}
                   statsByPoint={statsByPoint}
+                  spectralByPoint={spectralByPoint}
                 />
               </>
             )}
