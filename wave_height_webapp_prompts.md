@@ -814,6 +814,44 @@ export function estimateDominantPeriod(
 
 ---
 
+## Phase 13 (แก้ด่วน): บั๊กต้องกดรีเซ็ตก่อนภาพขึ้น หลังอัปโหลดคลิปใหม่ทุกครั้ง
+
+```
+ทำงานต่อจากโปรเจกต์ wave-height-webapp (ตอนนี้ทำถึง Phase 12 แล้ว) แก้บั๊กเร่งด่วน: หลังอัปโหลดวิดีโอใหม่ ต้องกดปุ่ม "รีเซ็ต" ก่อนภาพ/เฟรมถึงจะแสดงผล เกิดขึ้นซ้ำทุกขั้นตอนที่มีการแสดงเฟรมวิดีโอ (calibration canvas, ruler panel, live viewer)
+
+วินิจฉัยสาเหตุที่เป็นไปได้ (ให้ตรวจสอบและแก้ทั้งสองจุด เพราะมักเกิดร่วมกัน):
+
+สาเหตุที่ 1 — stale event listener / component ไม่ remount เมื่อเปลี่ยนวิดีโอ:
+ตรวจสอบทุก component ที่แสดงเฟรมวิดีโอบน canvas (VideoUploader, RulerCalibrationPanel/CalibrationCanvas จาก Phase 1/9/12, LiveViewerCanvas จาก Phase 8) ว่า:
+- เมื่อ prop videoUrl เปลี่ยน (อัปโหลดไฟล์ใหม่) useEffect ที่ผูก event listener ('seeked', 'loadeddata', 'timeupdate') มี cleanup function (return () => video.removeEventListener(...)) ครบทุกตัวที่ addEventListener ไว้หรือไม่ ถ้าขาด cleanup จะเกิด listener ซ้อนทับหลายชุดจากวิดีโอเก่า/ใหม่ปนกัน ทำให้ state สับสน
+- เพิ่ม `key={videoUrl}` ให้กับ component หลักที่ครอบ video+canvas (หรือกับ <video> element เอง) เพื่อบังคับให้ React unmount/remount component ใหม่ทั้งชุดทุกครั้งที่ videoUrl เปลี่ยน วิธีนี้รับประกันว่าไม่มี state/listener เก่าหลงเหลือข้ามไฟล์แน่นอน (เป็นวิธีที่ปลอดภัยที่สุดสำหรับปัญหานี้ ให้ใช้เป็นทางแก้หลัก)
+
+สาเหตุที่ 2 — video.currentTime ไม่เปลี่ยนค่าจริง ทำให้ 'seeked' ไม่ยิง:
+แก้ src/lib/videoProcessor.ts ฟังก์ชัน captureFrameAtTime (จาก Phase 3):
+- ก่อน set video.currentTime = timeS ให้เช็คก่อนว่า Math.abs(video.currentTime - timeS) < 0.01 (เกือบเท่าเดิมอยู่แล้ว) และ video.readyState >= 2 (HAVE_CURRENT_DATA ขึ้นไป แปลว่ามีเฟรมพร้อมแสดงจริง ไม่ใช่แค่ metadata) — ถ้าเข้าเงื่อนไขนี้ ให้ drawImage ทันทีโดยไม่ต้อง set currentTime หรือรอ event 'seeked' เลย (เพราะรู้อยู่แล้วว่าไม่มี event ยิงแน่นอนในเคสนี้)
+- ถ้าไม่เข้าเงื่อนไขข้างต้น ค่อย set currentTime แล้วรอ 'seeked' ตามเดิม
+- เพิ่ม fallback: ถ้ารอ 'seeked' เกิน timeout (ตามที่มีอยู่แล้วจาก Phase 3) ให้ลอง drawImage จากสถานะปัจจุบันของ video ไปเลยก่อน reject (เผื่อ event ไม่ยิงด้วยเหตุผลอื่นที่ไม่ได้คาดไว้ ยังได้ภาพประมาณดีกว่าค้างไปเลย) — log คำเตือนไว้ด้วยว่าใช้ fallback path
+
+สาเหตุที่ 3 (ตรวจสอบเพิ่มเติม) — การโหลดวิดีโอใหม่ไม่รอให้พร้อมก่อนพยายามวาดเฟรมแรก:
+- ตรวจสอบว่าตอนอัปโหลดไฟล์ใหม่ (VideoUploader component) การพยายามวาดเฟรมแรกลง canvas (เช่นใน RulerCalibrationPanel) เกิดขึ้น**หลังจาก** video element ยิง 'loadeddata' แล้วเท่านั้น ไม่ใช่พยายามวาดทันทีที่ videoUrl prop เปลี่ยน (ตอนนั้น video อาจยังโหลดไม่เสร็จ readyState ยังไม่ถึง HAVE_CURRENT_DATA) — ถ้าโค้ดปัจจุบันไม่ได้รอ 'loadeddata' ก่อน ให้แก้ไขเพิ่ม
+
+หลังแก้ทั้งสามจุด ให้ทดสอบ manual flow ที่เคยมีปัญหาโดยเฉพาะ (ไม่ต้องพึ่ง unit test อัตโนมัติเพราะเป็นบั๊กเกี่ยวกับ browser event timing ที่เทสอัตโนมัติ mock ยาก):
+- อัปโหลดวิดีโอไฟล์ A → เห็นเฟรมแรกขึ้นทันทีโดยไม่ต้องกดอะไรเพิ่ม
+- ลบ/reset แล้วอัปโหลดวิดีโอไฟล์ B (คนละไฟล์) ทันที → เห็นเฟรมแรกของไฟล์ B ขึ้นทันที ไม่ใช่ค้างเป็นเฟรมของไฟล์ A หรือจอว่าง
+- ทำซ้ำ 3-4 รอบสลับไฟล์ A/B/C เพื่อมั่นใจว่าไม่มี state หลงเหลือข้ามไฟล์เลยสักครั้ง
+- ทดสอบเหมือนกันในทุกหน้าที่มีการแสดงเฟรมวิดีโอ (calibration, ruler panel, live viewer ตอนเริ่มประมวลผล)
+
+เขียน unit test เท่าที่ทำได้ในไฟล์ src/lib/videoProcessor.test.ts (แก้เพิ่ม):
+- test captureFrameAtTime ด้วย mock video element ที่ currentTime เท่ากับ timeS ที่ขอตั้งแต่แรก (mock readyState = 2) → ต้อง resolve ทันทีโดยไม่มีการเรียก addEventListener('seeked', ...) เลย (ตรวจสอบด้วย mock/spy ว่าไม่ถูกเรียก)
+- test captureFrameAtTime กรณีปกติที่ currentTime ต่างจาก timeS → ยังคง set currentTime แล้วรอ 'seeked' ตามเดิม (ไม่ regression พฤติกรรมเดิม)
+
+รันเทสด้วย `npm run test` รายงานผล และเน้นทดสอบ manual flow ข้างบนด้วยมือให้ครบทุกหน้า เพราะเป็นจุดที่ automated test คุมได้ไม่หมด
+```
+
+**เกณฑ์ผ่านเฟส:** unit test ที่เทสได้ผ่านหมด, **สำคัญที่สุดคือทดสอบด้วยมือ**อัปโหลด-สลับไฟล์วิดีโอหลายรอบในทุกหน้าที่มี canvas แสดงเฟรม แล้วภาพต้องขึ้นเองทันทีทุกครั้งโดยไม่ต้องกดรีเซ็ตอีกต่อไป
+
+---
+
 ## หมายเหตุสำคัญเฉพาะเวอร์ชัน Client-Side
 
 - **ความเร็วในการประมวลผล**: การ seek วิดีโอทีละเฟรมผ่าน `currentTime` มี overhead กว่าการอ่านไฟล์ตรง ๆ แบบ Python/OpenCV พอสมควร วิดีโอยาวหรือ sample rate สูงอาจใช้เวลานานในเบราว์เซอร์ — ถ้าพบว่าช้าเกินไปในทางปฏิบัติ ให้พิจารณาลด sampleRateHz ลง หรือขอ prompt เฟสเสริมสำหรับใช้ `requestVideoFrameCallback` (แม่นยำกว่าและเร็วกว่าการ seek แต่รองรับเฉพาะ Chromium-based browsers)

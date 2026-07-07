@@ -39,52 +39,47 @@ export default function RulerCalibrationPanel({
   // already seen (e.g. scrubbing back and forth across the same frame).
   const [frameVersion, setFrameVersion] = useState(0);
 
-  // Load the video off-screen and draw its first frame, same pattern as the
-  // other calibration/selection components. Once ready, the user is free to
-  // scrub to any other frame as the calibration reference (Phase 12).
+  // Load the video off-screen and drive the visible canvas purely off a
+  // `frameVersion` counter — there is deliberately no one-shot "draw the
+  // first frame once" path here. A browser can fire 'loadeddata' before the
+  // frame is genuinely decodable, and drawImage at that instant silently
+  // paints blank/placeholder content; a one-shot guard would then permanently
+  // lock that bad frame in, even once 'seeked' (or anything else) later had
+  // real pixel data ready (Phase 13 fix — this used to require a manual
+  // "Reset" click to force a redraw after the video had actually caught up).
+  // Every readiness signal (loadeddata, seeked, throttled timeupdate) instead
+  // just bumps frameVersion, and a couple of rAF-deferred bumps after load
+  // self-heal even if the browser never fires a follow-up event for a video
+  // that's already at rest.
   useEffect(() => {
     const video = videoRef.current;
     if (!video) {
       return;
     }
 
-    let hasDrawnFrame = false;
     setIsFrameReady(false);
     setRoi(null);
     setTickClicks([]);
     setCurrentTimeS(0);
     setIsPlaying(false);
 
-    function drawFirstFrame() {
-      if (hasDrawnFrame || !video) {
-        return;
+    let cancelled = false;
+    function bumpFrame() {
+      if (!cancelled) {
+        setFrameVersion((v) => v + 1);
       }
-      const canvas = canvasRef.current;
-      if (!canvas) {
-        return;
-      }
-      const ctx = canvas.getContext("2d");
-      if (!ctx) {
-        return;
-      }
-
-      hasDrawnFrame = true;
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      setIsFrameReady(true);
     }
 
     function handleLoadedData() {
-      if (video) {
-        video.currentTime = 0;
-        setDurationS(video.duration || 0);
+      if (!video) {
+        return;
       }
-      drawFirstFrame();
-    }
-
-    function handleSeeked() {
-      setFrameVersion((v) => v + 1);
+      video.currentTime = 0;
+      setDurationS(video.duration || 0);
+      setIsFrameReady(true);
+      bumpFrame();
+      requestAnimationFrame(bumpFrame);
+      requestAnimationFrame(() => requestAnimationFrame(bumpFrame));
     }
 
     function handleTimeUpdate() {
@@ -97,7 +92,7 @@ export default function RulerCalibrationPanel({
       }
       lastTimeUpdateRef.current = now;
       setCurrentTimeS(video.currentTime);
-      setFrameVersion((v) => v + 1);
+      bumpFrame();
     }
 
     function handlePlay() {
@@ -108,8 +103,7 @@ export default function RulerCalibrationPanel({
     }
 
     video.addEventListener("loadeddata", handleLoadedData);
-    video.addEventListener("seeked", drawFirstFrame);
-    video.addEventListener("seeked", handleSeeked);
+    video.addEventListener("seeked", bumpFrame);
     video.addEventListener("timeupdate", handleTimeUpdate);
     video.addEventListener("play", handlePlay);
     video.addEventListener("pause", handlePauseOrEnded);
@@ -119,9 +113,9 @@ export default function RulerCalibrationPanel({
     video.load();
 
     return () => {
+      cancelled = true;
       video.removeEventListener("loadeddata", handleLoadedData);
-      video.removeEventListener("seeked", drawFirstFrame);
-      video.removeEventListener("seeked", handleSeeked);
+      video.removeEventListener("seeked", bumpFrame);
       video.removeEventListener("timeupdate", handleTimeUpdate);
       video.removeEventListener("play", handlePlay);
       video.removeEventListener("pause", handlePauseOrEnded);
@@ -131,7 +125,7 @@ export default function RulerCalibrationPanel({
 
   // Redraw the base frame plus the ROI box (finalized or mid-drag) and any
   // tick clicks, whenever those change OR the video has moved to a different
-  // frame (scrub/play/pause).
+  // frame (scrub/play/pause/initial load settling in — see frameVersion above).
   useEffect(() => {
     if (!isFrameReady) {
       return;
@@ -144,6 +138,11 @@ export default function RulerCalibrationPanel({
     const ctx = canvas.getContext("2d");
     if (!ctx) {
       return;
+    }
+
+    if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
     }
 
     ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -296,7 +295,10 @@ export default function RulerCalibrationPanel({
 
   return (
     <div className="flex flex-col gap-3">
-      <video ref={videoRef} className="hidden" muted playsInline />
+      {/* Keyed on videoUrl so React fully unmounts/remounts this DOM node on
+          every file switch — a defense-in-depth guard (Phase 13) against any
+          stale native video/decode state surviving across an upload. */}
+      <video ref={videoRef} key={videoUrl} className="hidden" muted playsInline />
 
       {!isFrameReady && (
         <p className="text-sm text-zinc-500">Loading first frame…</p>

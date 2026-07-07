@@ -39,59 +39,63 @@ export default function PointSelector({
 
   const [isFrameReady, setIsFrameReady] = useState(false);
   const [points, setPoints] = useState<MeasurementPoint[]>([]);
+  // Bumped on every 'loadeddata'/'seeked' so the redraw effect below re-runs.
+  // See the effect's own comment for why there's no one-shot "draw once" path.
+  const [frameVersion, setFrameVersion] = useState(0);
 
-  // Load the video off-screen and draw its first frame, same pattern as
-  // CalibrationCanvas/ProcessingPanel.
+  // Load the video off-screen and drive the visible canvas purely off
+  // `frameVersion` — there is deliberately no one-shot "draw the first frame
+  // once" path here. A browser can fire 'loadeddata' before the frame is
+  // genuinely decodable, and drawImage at that instant silently paints
+  // blank/placeholder content; a one-shot guard would then permanently lock
+  // that bad frame in, even once 'seeked' (or anything else) later had real
+  // pixel data ready (Phase 13 fix — this used to require a manual "Reset"
+  // click elsewhere on the page to force a redraw after the video had
+  // actually caught up). A couple of rAF-deferred bumps after load self-heal
+  // even if the browser never fires a follow-up event for an at-rest video.
   useEffect(() => {
     const video = videoRef.current;
     if (!video) {
       return;
     }
 
-    let hasDrawnFrame = false;
     setIsFrameReady(false);
     setPoints([]);
 
-    function drawFirstFrame() {
-      if (hasDrawnFrame || !video) {
-        return;
+    let cancelled = false;
+    function bumpFrame() {
+      if (!cancelled) {
+        setFrameVersion((v) => v + 1);
       }
-      const canvas = canvasRef.current;
-      if (!canvas) {
-        return;
-      }
-      const ctx = canvas.getContext("2d");
-      if (!ctx) {
-        return;
-      }
-
-      hasDrawnFrame = true;
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      setIsFrameReady(true);
     }
 
     function handleLoadedData() {
-      if (video) {
-        video.currentTime = 0;
+      if (!video) {
+        return;
       }
-      drawFirstFrame();
+      video.currentTime = 0;
+      setIsFrameReady(true);
+      bumpFrame();
+      requestAnimationFrame(bumpFrame);
+      requestAnimationFrame(() => requestAnimationFrame(bumpFrame));
     }
 
     video.addEventListener("loadeddata", handleLoadedData);
-    video.addEventListener("seeked", drawFirstFrame);
+    video.addEventListener("seeked", bumpFrame);
 
     video.src = videoUrl;
     video.load();
 
     return () => {
+      cancelled = true;
       video.removeEventListener("loadeddata", handleLoadedData);
-      video.removeEventListener("seeked", drawFirstFrame);
+      video.removeEventListener("seeked", bumpFrame);
     };
   }, [videoUrl]);
 
-  // Redraw the frame plus one colored vertical line per point.
+  // Redraw the frame plus one colored vertical line per point, whenever
+  // those change OR the video has settled into its real decoded frame
+  // (see frameVersion above).
   useEffect(() => {
     if (!isFrameReady) {
       return;
@@ -106,6 +110,11 @@ export default function PointSelector({
       return;
     }
 
+    if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+    }
+
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
@@ -117,7 +126,10 @@ export default function PointSelector({
       ctx.lineWidth = 2;
       ctx.stroke();
     }
-  }, [points, isFrameReady]);
+    // frameVersion is read only to retrigger this effect once the video's
+    // real frame is ready — it isn't used in the body itself (the redraw
+    // always reads the video element's *current* frame directly).
+  }, [points, isFrameReady, frameVersion]);
 
   // Notify the parent whenever the point list changes.
   useEffect(() => {
@@ -195,7 +207,10 @@ export default function PointSelector({
 
   return (
     <div className="flex flex-col gap-3">
-      <video ref={videoRef} className="hidden" muted playsInline />
+      {/* Keyed on videoUrl so React fully unmounts/remounts this DOM node on
+          every file switch — a defense-in-depth guard (Phase 13) against any
+          stale native video/decode state surviving across an upload. */}
+      <video ref={videoRef} key={videoUrl} className="hidden" muted playsInline />
 
       {!isFrameReady && (
         <p className="text-sm text-zinc-500">Loading first frame…</p>

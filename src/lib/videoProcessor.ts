@@ -160,7 +160,19 @@ export function captureFrameAtTime(
       }
       settled = true;
       cleanup();
-      reject(new Error(`Timed out waiting for video to seek to ${timeS}s`));
+
+      // 'seeked' never fired for some reason we didn't anticipate — rather
+      // than fail the whole run, fall back to whatever frame the video is
+      // currently showing. It may be a frame or two off, but that's a far
+      // better outcome than aborting processing entirely (Phase 13).
+      try {
+        console.warn(
+          `Timed out waiting for 'seeked' at ${timeS}s — using the video's current frame as a fallback.`
+        );
+        resolve(drawAndRead());
+      } catch (error) {
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
     }, SEEK_TIMEOUT_MS);
 
     video.addEventListener("seeked", handleSeeked);

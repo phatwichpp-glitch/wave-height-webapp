@@ -330,7 +330,7 @@ describe("captureFrameAtTime", () => {
     vi.useRealTimers();
   });
 
-  it("rejects when the video never fires 'seeked'", async () => {
+  it("rejects when the video never fires 'seeked' and the fallback draw itself fails", async () => {
     vi.useFakeTimers();
     const video = createMockVideo({
       videoWidth: 100,
@@ -338,13 +338,33 @@ describe("captureFrameAtTime", () => {
       duration: 10,
       fireSeeked: false,
     });
-    const canvas = {} as HTMLCanvasElement;
+    const canvas = {} as HTMLCanvasElement; // no getContext -> fallback draw throws too
 
     const promise = captureFrameAtTime(video, canvas, 1.5);
-    const assertion = expect(promise).rejects.toThrow(/timed out/i);
+    const assertion = expect(promise).rejects.toThrow();
 
     await vi.runAllTimersAsync();
     await assertion;
+  });
+
+  it("falls back to drawing the video's current frame instead of rejecting when 'seeked' never fires but a real canvas is available (Phase 13)", async () => {
+    vi.useFakeTimers();
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const video = createMockVideo({
+      videoWidth: 100,
+      videoHeight: 200,
+      duration: 10,
+      fireSeeked: false,
+    });
+    const canvas = createMockCanvas(100, 200);
+
+    const promise = captureFrameAtTime(video, canvas, 1.5);
+    await vi.runAllTimersAsync();
+    const imageData = await promise;
+
+    expect(imageData.height).toBe(200);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringMatching(/timed out.*fallback/i));
+    warnSpy.mockRestore();
   });
 
   it("captures immediately without waiting for 'seeked' when already at the requested time (Safari never fires it for a same-position seek)", async () => {
@@ -355,11 +375,31 @@ describe("captureFrameAtTime", () => {
       fireSeeked: false, // a same-position seek that never fires 'seeked'
       readyState: 2, // HAVE_CURRENT_DATA
     });
+    const addEventListenerSpy = vi.spyOn(video, "addEventListener");
     const canvas = createMockCanvas(100, 200);
 
     // currentTime starts at 0, so capturing t=0 must not depend on 'seeked'.
     const imageData = await captureFrameAtTime(video, canvas, 0);
     expect(imageData.height).toBe(200);
+
+    // Phase 13: confirm this really is the synchronous fast path — no
+    // 'seeked' listener should ever have been registered for it.
+    expect(addEventListenerSpy).not.toHaveBeenCalledWith("seeked", expect.anything());
+  });
+
+  it("still sets currentTime and waits for 'seeked' as before when the requested time differs from the current one (Phase 13 regression check)", async () => {
+    const video = createMockVideo({
+      videoWidth: 100,
+      videoHeight: 200,
+      duration: 10,
+      readyState: 2,
+    });
+    const canvas = createMockCanvas(100, 200);
+
+    const imageData = await captureFrameAtTime(video, canvas, 2.5);
+
+    expect(imageData.height).toBe(200);
+    expect(video.currentTime).toBe(2.5);
   });
 });
 
