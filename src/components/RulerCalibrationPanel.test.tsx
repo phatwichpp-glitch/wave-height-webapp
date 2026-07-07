@@ -6,7 +6,7 @@ function installCanvasStub() {
   const noop = () => {};
   const contextStub = {
     clearRect: noop,
-    drawImage: noop,
+    drawImage: vi.fn(),
     beginPath: noop,
     moveTo: noop,
     lineTo: noop,
@@ -30,6 +30,8 @@ function installCanvasStub() {
     bottom: 240,
     toJSON: () => ({}),
   });
+
+  return contextStub;
 }
 
 function makeFrameReady(video: HTMLVideoElement) {
@@ -114,5 +116,32 @@ describe("RulerCalibrationPanel", () => {
 
     fireEvent.click(confirmButton);
     expect(handleCalibrated).not.toHaveBeenCalled();
+  });
+
+  it("scrubbing updates the video's currentTime and redraws the canvas at the new frame (Phase 12)", () => {
+    const contextStub = installCanvasStub();
+    const { container } = render(
+      <RulerCalibrationPanel videoUrl="blob:test" onCalibrated={vi.fn()} />
+    );
+
+    const video = container.querySelector("video") as HTMLVideoElement;
+    Object.defineProperty(video, "duration", { value: 10, configurable: true });
+    makeFrameReady(video);
+
+    const drawCallsBeforeScrub = contextStub.drawImage.mock.calls.length;
+
+    const scrubber = screen.getByLabelText(/video scrubber/i) as HTMLInputElement;
+    fireEvent.change(scrubber, { target: { value: "3.5" } });
+
+    // The scrubber's onChange sets currentTime imperatively (before any
+    // 'seeked' event fires), so the drag itself is immediately reflected.
+    expect(video.currentTime).toBe(3.5);
+    expect(screen.getByText("3.5s")).toBeInTheDocument();
+
+    // The browser confirms the seek by firing 'seeked' once the new frame is
+    // decodable — this is what actually triggers the redraw.
+    fireEvent(video, new Event("seeked"));
+
+    expect(contextStub.drawImage.mock.calls.length).toBeGreaterThan(drawCallsBeforeScrub);
   });
 });

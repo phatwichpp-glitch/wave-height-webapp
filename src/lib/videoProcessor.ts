@@ -32,6 +32,16 @@ export interface ProcessingOptions {
   searchMarginPx: number;
   smoothSigma: number;
   sampleRateHz: number;
+  /**
+   * Absolute video time (seconds) to start analysis from — everything before
+   * it (typically the stretch where the camera is still being aimed/settled)
+   * is skipped entirely, both for the main sampling loop and for auto-baseline
+   * detection. Defaults to 0. The *output* WaveDataPoint.timeS is always
+   * zero-based relative to this point (timeS=0 means "analysisStartTimeS
+   * into the source video", not "the start of the file") so downstream
+   * charts/statistics never need to know this offset existed.
+   */
+  analysisStartTimeS?: number;
   onProgress?: (percent: number) => void;
   /** Called after every frame is processed, with each point's live detection — for a real-time overlay. */
   onFrameProcessed?: (detections: DetectionResult[]) => void;
@@ -199,7 +209,8 @@ async function computeAutoBaselines(
   columnWidth: number,
   searchMarginPx: number,
   smoothSigma: number,
-  sampleRateHz: number
+  sampleRateHz: number,
+  analysisStartTimeS: number
 ): Promise<Map<string, number>> {
   const baselines = new Map<string, number>();
   const pending: MeasurementPoint[] = [];
@@ -227,7 +238,7 @@ async function computeAutoBaselines(
   const samplesByPoint = new Map<string, number[]>(pending.map((point) => [point.id, []]));
 
   for (let i = 0; i < BASELINE_SAMPLE_FRAMES; i++) {
-    const t = i / sampleRateHz;
+    const t = analysisStartTimeS + i / sampleRateHz;
     if (t >= video.duration) {
       break;
     }
@@ -283,10 +294,17 @@ export async function processVideo(
   options: ProcessingOptions
 ): Promise<Record<string, WaveDataPoint[]>> {
   const { points, columnWidth, searchMarginPx, smoothSigma, sampleRateHz } = options;
+  const analysisStartTimeS = options.analysisStartTimeS ?? 0;
   const duration = video.duration;
 
   if (points.length === 0) {
     throw new Error("At least one measurement point is required");
+  }
+
+  if (analysisStartTimeS >= duration) {
+    throw new Error(
+      `analysisStartTimeS (${analysisStartTimeS}s) must be before the video ends (${duration}s)`
+    );
   }
 
   let rulerTracker: RulerCalibrationTracker | null = null;
@@ -337,7 +355,8 @@ export async function processVideo(
         columnWidth,
         searchMarginPx,
         smoothSigma,
-        sampleRateHz
+        sampleRateHz,
+        analysisStartTimeS
       );
 
   // Turbopack's special-case static analysis for `new Worker(new URL(...))`
@@ -358,14 +377,18 @@ export async function processVideo(
       lastYByPoint.set(point.id, null);
     }
 
-    const totalFrames = Math.max(1, Math.floor(duration * sampleRateHz));
+    const totalFrames = Math.max(1, Math.floor((duration - analysisStartTimeS) * sampleRateHz));
 
     for (let i = 0; i < totalFrames; i++) {
       if (options.isPausedRef) {
         await waitWhilePaused(options.isPausedRef);
       }
 
-      const t = i / sampleRateHz;
+      // relativeT is what gets reported (WaveDataPoint.timeS): zero-based
+      // from analysisStartTimeS, so charts/statistics never need to know an
+      // offset existed. t is the actual absolute video time to seek to.
+      const relativeT = i / sampleRateHz;
+      const t = analysisStartTimeS + relativeT;
       if (t >= duration) {
         break;
       }
@@ -432,7 +455,7 @@ export async function processVideo(
         }
         const elevationCm = (baselineY - response.yPosition) / pixelsPerCmNow;
         result[response.pointId].push({
-          timeS: t,
+          timeS: relativeT,
           elevationCm,
           confidence: response.confidence,
         });

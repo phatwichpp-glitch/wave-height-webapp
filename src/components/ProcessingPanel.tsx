@@ -25,12 +25,20 @@ interface ProcessingPanelProps {
   /** When set (from RulerCalibrationPanel), points track the ruler continuously instead of using a fixed pixel column/baseline. */
   rulerCalibration?: RulerCalibration | null;
   cmPerTick?: number;
+  /** The video time (seconds) the user was scrubbed to when they confirmed calibration — compared against analysisStartTimeS below to warn if they've drifted far apart. */
+  calibrationReferenceTimeS?: number | null;
 }
 
 const MAX_POINTS = 8;
 const DEBUG_MODE_DELAY_MS = 75;
 const RULER_CHECK_INTERVAL_FRAMES = 10;
 const RULER_MAX_FIT_ERROR_PX = 2.0;
+// Below this much remaining video after analysisStartTimeS, there may not be
+// enough samples left for a statistically meaningful wave analysis.
+const MIN_RECOMMENDED_REMAINING_S = 5;
+// Beyond this gap between the calibration frame and the analysis start time,
+// ROI/point positions from calibration may no longer line up well.
+const CALIBRATION_DRIFT_WARNING_S = 10;
 
 export default function ProcessingPanel({
   videoUrl,
@@ -38,6 +46,7 @@ export default function ProcessingPanel({
   onComplete,
   rulerCalibration = null,
   cmPerTick,
+  calibrationReferenceTimeS = null,
 }: ProcessingPanelProps) {
   // Dedicated hidden video + visible frame canvas for processVideo()'s own
   // captures — separate from PointSelector's own video/canvas used just for
@@ -52,9 +61,11 @@ export default function ProcessingPanel({
   const frameCounterRef = useRef(0);
 
   const [isMetadataReady, setIsMetadataReady] = useState(false);
+  const [videoDurationS, setVideoDurationS] = useState(0);
   const [points, setPoints] = useState<MeasurementPoint[]>([]);
   const [sampleRateHz, setSampleRateHz] = useState("10");
   const [expectedFrequencyHz, setExpectedFrequencyHz] = useState("");
+  const [analysisStartTimeS, setAnalysisStartTimeS] = useState("0");
   const [isProcessing, setIsProcessing] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [debugMode, setDebugMode] = useState(false);
@@ -74,6 +85,10 @@ export default function ProcessingPanel({
     setIsMetadataReady(false);
 
     function handleLoadedMetadata() {
+      if (!video) {
+        return;
+      }
+      setVideoDurationS(video.duration || 0);
       setIsMetadataReady(true);
     }
 
@@ -98,6 +113,29 @@ export default function ProcessingPanel({
     trimmedExpectedFrequency !== "" &&
     (!Number.isFinite(parsedExpectedFrequency) || (parsedExpectedFrequency ?? 0) <= 0);
 
+  const parsedAnalysisStartTime = parseFloat(analysisStartTimeS);
+  const hasInvalidAnalysisStartTime =
+    !Number.isFinite(parsedAnalysisStartTime) ||
+    parsedAnalysisStartTime < 0 ||
+    (isMetadataReady && parsedAnalysisStartTime >= videoDurationS);
+
+  // Non-blocking: fewer than this many seconds of usable video remain after
+  // the chosen start time — statistics may be unreliable, but the user may
+  // still want to proceed (e.g. just to inspect the raw trace).
+  const remainingAfterStartS = videoDurationS - parsedAnalysisStartTime;
+  const showShortRemainingWarning =
+    isMetadataReady &&
+    !hasInvalidAnalysisStartTime &&
+    remainingAfterStartS < MIN_RECOMMENDED_REMAINING_S;
+
+  // Non-blocking: the frame the user calibrated against is far from the
+  // chosen analysis start time, so a fixed-camera ROI/point position may not
+  // still line up (ruler tracking mode should self-correct within reason).
+  const showCalibrationDriftWarning =
+    calibrationReferenceTimeS !== null &&
+    !hasInvalidAnalysisStartTime &&
+    Math.abs(calibrationReferenceTimeS - parsedAnalysisStartTime) > CALIBRATION_DRIFT_WARNING_S;
+
   const missingBaselines =
     !!rulerCalibration && points.some((point) => point.baselineValueCm === null);
 
@@ -107,6 +145,7 @@ export default function ProcessingPanel({
     points.length > 0 &&
     !missingBaselines &&
     !hasInvalidExpectedFrequency &&
+    !hasInvalidAnalysisStartTime &&
     Number.isFinite(parsedSampleRate) &&
     parsedSampleRate > 0;
 
@@ -146,6 +185,7 @@ export default function ProcessingPanel({
         searchMarginPx: 40,
         smoothSigma: 2.0,
         sampleRateHz: parsedSampleRate,
+        analysisStartTimeS: parsedAnalysisStartTime,
         onProgress: (percent) => setProgress(percent),
         onFrameProcessed: handleFrameProcessed,
         onRulerCheckFailed: () => setRulerCheckFailures((count) => count + 1),
@@ -196,6 +236,26 @@ export default function ProcessingPanel({
         </p>
       )}
 
+      {hasInvalidAnalysisStartTime && (
+        <p className="text-sm text-amber-600">
+          Analysis start time must be a number from 0 up to just before the video ends
+          {isMetadataReady ? ` (${videoDurationS.toFixed(1)}s)` : ""}.
+        </p>
+      )}
+
+      {showShortRemainingWarning && (
+        <p className="text-sm text-amber-600">
+          ช่วงเวลาที่เหลือสำหรับวิเคราะห์สั้นเกินไป อาจไม่พอสำหรับคำนวณสถิติคลื่นที่น่าเชื่อถือ
+        </p>
+      )}
+
+      {showCalibrationDriftWarning && (
+        <p className="text-sm text-amber-600">
+          แนะนำเลือกเฟรม calibrate ให้ใกล้เคียงกับช่วงเวลาที่จะวิเคราะห์จริง
+          เพื่อความแม่นยำของ ROI ไม้บรรทัด
+        </p>
+      )}
+
       {/* Kept as one persistent element (never unmounted) so processingCanvasRef
           always points to the same node processVideo() is capturing into —
           only its visibility toggles, so the live preview actually shows the
@@ -239,6 +299,19 @@ export default function ProcessingPanel({
           />
         </label>
 
+        <label className="flex flex-col gap-1 text-sm">
+          Analysis start time (s)
+          <input
+            type="number"
+            min={0}
+            step="any"
+            value={analysisStartTimeS}
+            onChange={(event) => setAnalysisStartTimeS(event.target.value)}
+            aria-label="Analysis start time in seconds"
+            className="w-28 rounded border border-zinc-300 px-2 py-1 dark:border-zinc-700 dark:bg-zinc-900"
+          />
+        </label>
+
         <button
           type="button"
           disabled={!canStart}
@@ -248,6 +321,10 @@ export default function ProcessingPanel({
           {isProcessing ? "Processing…" : "Start Processing"}
         </button>
       </div>
+
+      <p className="text-xs text-zinc-500 dark:text-zinc-500">
+        ระบุวินาทีที่กล้องเริ่มนิ่ง/เข้าตำแหน่งถ่ายจริง ข้อมูลก่อนหน้านี้จะไม่ถูกใช้วิเคราะห์
+      </p>
 
       <ProcessingControls
         isProcessing={isProcessing}

@@ -10,10 +10,15 @@ import {
 
 interface CalibrationCanvasProps {
   videoUrl: string;
-  onCalibrated: (data: CalibrationData) => void;
+  /** referenceTimeS is the video's currentTime at the moment calibration was confirmed — see ProcessingPanel's calibrationReferenceTimeS prop for why this matters. */
+  onCalibrated: (data: CalibrationData, referenceTimeS: number) => void;
 }
 
 type Point = { x: number; y: number };
+
+// 'timeupdate' fires many times a second during playback; redrawing the
+// canvas on every single one is wasted work; this floors the redraw rate.
+const TIMEUPDATE_THROTTLE_MS = 100;
 
 export default function CalibrationCanvas({
   videoUrl,
@@ -21,10 +26,18 @@ export default function CalibrationCanvas({
 }: CalibrationCanvasProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const lastTimeUpdateRef = useRef(0);
 
   const [isFrameReady, setIsFrameReady] = useState(false);
   const [points, setPoints] = useState<Point[]>([]);
   const [knownDistanceCm, setKnownDistanceCm] = useState("");
+  const [durationS, setDurationS] = useState(0);
+  const [currentTimeS, setCurrentTimeS] = useState(0);
+  const [isPlaying, setIsPlaying] = useState(false);
+  // Bumped on every 'seeked'/'timeupdate' so the redraw effect below re-runs
+  // even when currentTimeS's *value* happens to land back on something
+  // already seen (e.g. scrubbing back and forth across the same frame).
+  const [frameVersion, setFrameVersion] = useState(0);
   // Lazy initializer (not an effect) so this doesn't trigger an extra render;
   // loadCalibrationFromLocalStorage() safely returns null when localStorage is
   // unavailable (e.g. during server rendering), so it's safe to call eagerly.
@@ -35,7 +48,9 @@ export default function CalibrationCanvas({
   // Load the video off-screen, seek to the first frame, and draw it to the
   // visible canvas. Both 'loadeddata' and 'seeked' can fire depending on
   // whether the browser considers currentTime=0 a real seek, so we guard
-  // with a one-shot flag and let whichever event arrives first win.
+  // with a one-shot flag and let whichever event arrives first win. Once
+  // ready, the user is free to scrub to any other frame as the calibration
+  // reference (Phase 12) — the initial frame is just a starting point.
   useEffect(() => {
     const video = videoRef.current;
     if (!video) {
@@ -45,6 +60,8 @@ export default function CalibrationCanvas({
     let hasDrawnFrame = false;
     setIsFrameReady(false);
     setPoints([]);
+    setCurrentTimeS(0);
+    setIsPlaying(false);
 
     function drawFirstFrame() {
       if (hasDrawnFrame || !video) {
@@ -69,12 +86,42 @@ export default function CalibrationCanvas({
     function handleLoadedData() {
       if (video) {
         video.currentTime = 0;
+        setDurationS(video.duration || 0);
       }
       drawFirstFrame();
     }
 
+    function handleSeeked() {
+      setFrameVersion((v) => v + 1);
+    }
+
+    function handleTimeUpdate() {
+      if (!video) {
+        return;
+      }
+      const now = Date.now();
+      if (now - lastTimeUpdateRef.current < TIMEUPDATE_THROTTLE_MS) {
+        return;
+      }
+      lastTimeUpdateRef.current = now;
+      setCurrentTimeS(video.currentTime);
+      setFrameVersion((v) => v + 1);
+    }
+
+    function handlePlay() {
+      setIsPlaying(true);
+    }
+    function handlePauseOrEnded() {
+      setIsPlaying(false);
+    }
+
     video.addEventListener("loadeddata", handleLoadedData);
     video.addEventListener("seeked", drawFirstFrame);
+    video.addEventListener("seeked", handleSeeked);
+    video.addEventListener("timeupdate", handleTimeUpdate);
+    video.addEventListener("play", handlePlay);
+    video.addEventListener("pause", handlePauseOrEnded);
+    video.addEventListener("ended", handlePauseOrEnded);
 
     video.src = videoUrl;
     video.load();
@@ -82,10 +129,16 @@ export default function CalibrationCanvas({
     return () => {
       video.removeEventListener("loadeddata", handleLoadedData);
       video.removeEventListener("seeked", drawFirstFrame);
+      video.removeEventListener("seeked", handleSeeked);
+      video.removeEventListener("timeupdate", handleTimeUpdate);
+      video.removeEventListener("play", handlePlay);
+      video.removeEventListener("pause", handlePauseOrEnded);
+      video.removeEventListener("ended", handlePauseOrEnded);
     };
   }, [videoUrl]);
 
-  // Redraw the base frame plus click markers whenever the selected points change.
+  // Redraw the base frame plus click markers whenever the selected points
+  // change OR the video has moved to a different frame (scrub/play/pause).
   useEffect(() => {
     if (!isFrameReady) {
       return;
@@ -118,7 +171,34 @@ export default function CalibrationCanvas({
       ctx.lineWidth = 2;
       ctx.stroke();
     }
-  }, [points, isFrameReady]);
+    // frameVersion is read only to retrigger this effect on scrub/play — it
+    // isn't used in the body itself (the redraw always reads the video
+    // element's *current* frame directly).
+  }, [points, isFrameReady, frameVersion]);
+
+  function handleScrub(event: React.ChangeEvent<HTMLInputElement>) {
+    const video = videoRef.current;
+    if (!video) {
+      return;
+    }
+    const newTimeS = parseFloat(event.target.value);
+    video.currentTime = newTimeS;
+    // Set eagerly so the slider/number tracks the drag immediately — the
+    // 'seeked' listener above re-syncs both once the browser actually gets there.
+    setCurrentTimeS(newTimeS);
+  }
+
+  function handleTogglePlay() {
+    const video = videoRef.current;
+    if (!video) {
+      return;
+    }
+    if (isPlaying) {
+      video.pause();
+    } else {
+      video.play();
+    }
+  }
 
   function handleCanvasClick(event: React.MouseEvent<HTMLCanvasElement>) {
     if (points.length >= 2) {
@@ -160,12 +240,12 @@ export default function CalibrationCanvas({
       pixelsPerCm,
     };
     saveCalibrationToLocalStorage(data);
-    onCalibrated(data);
+    onCalibrated(data, currentTimeS);
   }
 
   function handleUseSaved() {
     if (savedCalibration) {
-      onCalibrated(savedCalibration);
+      onCalibrated(savedCalibration, currentTimeS);
     }
   }
 
@@ -184,9 +264,34 @@ export default function CalibrationCanvas({
         <p className="text-sm text-zinc-500">Loading first frame…</p>
       )}
 
+      {isFrameReady && (
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            onClick={handleTogglePlay}
+            className="rounded-full border border-zinc-300 px-3 py-1 text-sm hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+          >
+            {isPlaying ? "Pause" : "Play"}
+          </button>
+          <input
+            type="range"
+            min={0}
+            max={durationS}
+            step={0.1}
+            value={currentTimeS}
+            onChange={handleScrub}
+            aria-label="Video scrubber"
+            className="flex-1"
+          />
+          <span className="w-16 shrink-0 text-right text-sm tabular-nums text-zinc-600 dark:text-zinc-400">
+            {currentTimeS.toFixed(1)}s
+          </span>
+        </div>
+      )}
+
       <p className="text-sm text-zinc-600 dark:text-zinc-400">
-        Click two points on a reference scale (e.g. a ruler) visible in the frame.
-        Points selected: {points.length}/2
+        Scrub to a frame where the camera has settled, then click two points on a
+        reference scale (e.g. a ruler) visible in it. Points selected: {points.length}/2
       </p>
 
       <div className="flex flex-wrap items-center gap-3">

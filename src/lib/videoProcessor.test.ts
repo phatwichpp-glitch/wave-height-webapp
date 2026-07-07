@@ -219,6 +219,61 @@ function createMockCanvasForRulerTest(
   } as unknown as HTMLCanvasElement;
 }
 
+// A uniform (no column dependence) air/water edge whose y position flips at
+// `thresholdT`, based purely on the mock video's current (absolute) time —
+// for proving analysisStartTimeS actually shifts *which* frames get sampled,
+// both for auto-baseline detection and the main loop.
+function createMockCanvasWithTimeThresholdEdge(
+  video: HTMLVideoElement,
+  width: number,
+  height: number,
+  thresholdT: number,
+  beforeEdgeY: number,
+  afterEdgeY: number
+) {
+  let canvasWidth = width;
+  let canvasHeight = height;
+
+  const ctx = {
+    drawImage() {
+      /* no-op */
+    },
+    getImageData(_x: number, _y: number, w: number, h: number): ImageData {
+      const edgeY = video.currentTime < thresholdT ? beforeEdgeY : afterEdgeY;
+      const data = new Uint8ClampedArray(w * h * 4);
+      for (let row = 0; row < h; row++) {
+        const value = row < edgeY ? 200 : 80;
+        for (let col = 0; col < w; col++) {
+          const idx = (row * w + col) * 4;
+          data[idx] = value;
+          data[idx + 1] = value;
+          data[idx + 2] = value;
+          data[idx + 3] = 255;
+        }
+      }
+      return { data, width: w, height: h, colorSpace: "srgb" } as ImageData;
+    },
+  };
+
+  return {
+    getContext() {
+      return ctx;
+    },
+    get width() {
+      return canvasWidth;
+    },
+    set width(value: number) {
+      canvasWidth = value;
+    },
+    get height() {
+      return canvasHeight;
+    },
+    set height(value: number) {
+      canvasHeight = value;
+    },
+  } as unknown as HTMLCanvasElement;
+}
+
 // Stand-in for the real Worker: runs the exact same extractColumnProfile +
 // findSurfaceEdge logic the real videoProcessing.worker.ts uses (for every
 // point in the message), so processVideo's orchestration (looping, progress,
@@ -637,6 +692,102 @@ describe("processVideo", () => {
       expect(Number.isFinite(sample.elevationCm)).toBe(true);
       expect(Math.abs(sample.elevationCm - -1.0)).toBeLessThanOrEqual(0.1);
       expect(Math.abs(sample.elevationCm - 1.0)).toBeGreaterThan(0.5);
+    }
+  });
+});
+
+describe("processVideo — analysisStartTimeS (Phase 12)", () => {
+  const calibration: CalibrationData = {
+    point1: { x: 0, y: 0 },
+    point2: { x: 0, y: 100 },
+    knownDistanceCm: 10,
+    pixelsPerCm: 10,
+  };
+
+  beforeEach(() => {
+    vi.stubGlobal("Worker", MockWorker);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("skips everything before analysisStartTimeS and reports a zero-based timeS", async () => {
+    const video = createMockVideo({ videoWidth: 100, videoHeight: 200, duration: 1 });
+    const canvas = createMockCanvas(100, 200);
+    const analysisStartTimeS = 0.3;
+    const sampleRateHz = 10;
+
+    const points: MeasurementPoint[] = [
+      {
+        id: "p1",
+        xColumn: 50,
+        label: "Point 1",
+        color: "#3b82f6",
+        baselineY: 100, // fixed baseline: isolates this test from auto-baseline timing
+        baselineValueCm: null,
+        xOffsetCm: 0,
+      },
+    ];
+
+    const result = await processVideo(video, canvas, calibration, {
+      points,
+      columnWidth: 3,
+      searchMarginPx: 40,
+      smoothSigma: 2.0,
+      sampleRateHz,
+      analysisStartTimeS,
+    });
+
+    // (duration - analysisStartTimeS) * sampleRateHz = (1 - 0.3) * 10 = 7,
+    // not duration * sampleRateHz = 10.
+    expect(result.p1.length).toBe(7);
+
+    // Zero-based: the first sample is timeS=0 (meaning "at analysisStartTimeS
+    // in the source video"), counting up from there — never the raw 0.3s
+    // absolute video time.
+    const expectedTimeS = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6];
+    result.p1.forEach((sample, i) => {
+      expect(sample.timeS).toBeCloseTo(expectedTimeS[i]);
+    });
+  });
+
+  it("computes the auto-baseline only from frames at/after analysisStartTimeS, not from the start of the file", async () => {
+    const video = createMockVideo({ videoWidth: 60, videoHeight: 200, duration: 6 });
+    const analysisStartTimeS = 2;
+    // Edge sits at y=50 for any frame before analysisStartTimeS, and y=150
+    // from analysisStartTimeS onward — including during both auto-baseline
+    // sampling AND the main loop, so a correctly time-shifted implementation
+    // only ever sees y=150 and reports elevationCm ~ 0 (baseline == detected
+    // surface) for every sample. A version that ignored analysisStartTimeS
+    // for auto-baseline would mix in y=50 readings, skewing the baseline and
+    // producing a large nonzero elevationCm instead.
+    const canvas = createMockCanvasWithTimeThresholdEdge(video, 60, 200, analysisStartTimeS, 50, 150);
+
+    const points: MeasurementPoint[] = [
+      {
+        id: "p1",
+        xColumn: 30,
+        label: "Point 1",
+        color: "#3b82f6",
+        baselineY: null, // forces auto-baseline detection
+        baselineValueCm: null,
+        xOffsetCm: 0,
+      },
+    ];
+
+    const result = await processVideo(video, canvas, calibration, {
+      points,
+      columnWidth: 3,
+      searchMarginPx: 40,
+      smoothSigma: 2.0,
+      sampleRateHz: 10,
+      analysisStartTimeS,
+    });
+
+    expect(result.p1.length).toBeGreaterThan(0);
+    for (const sample of result.p1) {
+      expect(Math.abs(sample.elevationCm)).toBeLessThanOrEqual(1);
     }
   });
 });

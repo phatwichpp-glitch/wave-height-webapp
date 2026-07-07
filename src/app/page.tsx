@@ -44,11 +44,13 @@ export default function Home() {
   const [points, setPoints] = useState<MeasurementPoint[]>([]);
   const [processingSampleRateHz, setProcessingSampleRateHz] = useState<number | null>(null);
   const [expectedFrequencyHz, setExpectedFrequencyHz] = useState<number | null>(null);
+  const [calibrationReferenceTimeS, setCalibrationReferenceTimeS] = useState<number | null>(null);
 
   function handleVideoLoaded(url: string) {
     setVideoUrl(url);
     setCalibration(null);
     setRulerCalibration(null);
+    setCalibrationReferenceTimeS(null);
     setWaveData(null);
   }
 
@@ -56,18 +58,25 @@ export default function Home() {
     setCalibrationMode(mode);
     setCalibration(null);
     setRulerCalibration(null);
+    setCalibrationReferenceTimeS(null);
     setWaveData(null);
   }
 
-  function handleCalibrated(data: CalibrationData) {
+  function handleCalibrated(data: CalibrationData, referenceTimeS: number) {
     setCalibration(data);
+    setCalibrationReferenceTimeS(referenceTimeS);
     setWaveData(null);
   }
 
-  function handleRulerCalibrated(ruler: RulerCalibration, tickSpacingCm: number) {
+  function handleRulerCalibrated(
+    ruler: RulerCalibration,
+    tickSpacingCm: number,
+    referenceTimeS: number
+  ) {
     setRulerCalibration(ruler);
     setCmPerTick(tickSpacingCm);
     setCalibration(calibrationFromRuler(ruler));
+    setCalibrationReferenceTimeS(referenceTimeS);
     setWaveData(null);
   }
 
@@ -213,6 +222,7 @@ export default function Home() {
               onComplete={handleProcessingComplete}
               rulerCalibration={rulerCalibration}
               cmPerTick={cmPerTick}
+              calibrationReferenceTimeS={calibrationReferenceTimeS}
             />
           </section>
         )}
@@ -228,6 +238,21 @@ export default function Home() {
               return (
                 <p key={pointId} className="text-sm text-red-600">
                   {point?.label ?? pointId}: could not compute wave statistics — {message}
+                </p>
+              );
+            })}
+
+            {Object.entries(spectralErrorsByPoint).map(([pointId, message]) => {
+              // Only surface this as its own note when the primary stats
+              // succeeded — otherwise the row above already explains the
+              // point's failure and this would be a redundant second message.
+              if (!statsByPoint[pointId]) {
+                return null;
+              }
+              const point = points.find((p) => p.id === pointId);
+              return (
+                <p key={pointId} className="text-sm text-amber-600">
+                  {point?.label ?? pointId}: could not compute an FFT period cross-check — {message}
                 </p>
               );
             })}
