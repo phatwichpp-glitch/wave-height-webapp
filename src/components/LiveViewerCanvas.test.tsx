@@ -49,6 +49,7 @@ describe("LiveViewerCanvas", () => {
         xColumn: 40,
         yPosition: 120,
         confidence: 3.5,
+        lowConfidence: false,
         color: "#3b82f6",
         baselineY: 100,
       },
@@ -74,6 +75,40 @@ describe("LiveViewerCanvas", () => {
 
     // Confidence readout offset from the marker.
     expect(contextSpy.fillText).toHaveBeenCalledWith("3.5", 48, 112);
+  });
+
+  it("switches the marker to a warning color instead of the point's own color when lowConfidence is true (Phase 16)", () => {
+    const videoCanvasRef = {
+      current: { width: 100, height: 200 } as unknown as HTMLCanvasElement,
+    } as RefObject<HTMLCanvasElement | null>;
+
+    const fillStyleSets: string[] = [];
+    Object.defineProperty(contextSpy, "fillStyle", {
+      set(v: string) {
+        fillStyleSets.push(v);
+      },
+    });
+
+    const detections: DetectionResult[] = [
+      {
+        pointId: "p1",
+        xColumn: 40,
+        yPosition: 120,
+        confidence: 0.2,
+        lowConfidence: true,
+        color: "#3b82f6",
+        baselineY: 100,
+      },
+    ];
+
+    render(
+      <LiveViewerCanvas videoCanvasRef={videoCanvasRef} currentDetections={detections} />
+    );
+
+    // The marker/text fill should never be set to the point's own color
+    // (#3b82f6) while lowConfidence is true — only the warning color.
+    expect(fillStyleSets).not.toContain("#3b82f6");
+    expect(fillStyleSets.some((c) => c !== "#3b82f6")).toBe(true);
   });
 
   it("clears the overlay even when there are no detections", () => {

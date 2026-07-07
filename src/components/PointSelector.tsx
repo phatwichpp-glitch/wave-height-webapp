@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { MeasurementPoint, RulerCalibration } from "@/types/wave";
+import { DEFAULT_INITIAL_SEARCH_MARGIN_PX } from "@/lib/surfaceDetector";
 
 interface PointSelectorProps {
   videoUrl: string;
@@ -180,6 +181,25 @@ export default function PointSelector({
       ctx.strokeStyle = point.color;
       ctx.lineWidth = 2;
       ctx.stroke();
+
+      // Faint box showing exactly where the first frame's search is bounded
+      // to (Phase 16) — if the true water surface clearly won't be inside
+      // this box (e.g. a very tall wave), the user knows to widen the margin
+      // input below rather than being surprised by a bad first-frame lock.
+      const margin = point.initialSearchMarginPx ?? DEFAULT_INITIAL_SEARCH_MARGIN_PX;
+      const boxHalfWidth = 15;
+      ctx.save();
+      ctx.globalAlpha = 0.35;
+      ctx.strokeStyle = point.color;
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 3]);
+      ctx.strokeRect(
+        point.xColumn - boxHalfWidth,
+        point.initialGuessPixelY - margin,
+        boxHalfWidth * 2,
+        margin * 2
+      );
+      ctx.restore();
     }
     // frameVersion is read only to retrigger this effect once the video's
     // real frame is ready — it isn't used in the body itself (the redraw
@@ -223,7 +243,9 @@ export default function PointSelector({
 
     const rect = canvas.getBoundingClientRect();
     const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
     const x = Math.round((event.clientX - rect.left) * scaleX);
+    const y = Math.round((event.clientY - rect.top) * scaleY);
 
     const rulerInfo = getRulerInfo();
     const xOffsetCm = rulerInfo ? (x - rulerInfo.centerX) / rulerInfo.pixelsPerCm : 0;
@@ -236,6 +258,8 @@ export default function PointSelector({
       baselineY: null,
       baselineValueCm: null,
       xOffsetCm,
+      initialGuessPixelY: y,
+      initialSearchMarginPx: null,
     };
 
     setReferenceFrameChanged(false);
@@ -256,6 +280,20 @@ export default function PointSelector({
       prev.map((p) =>
         p.id === id
           ? { ...p, baselineValueCm: parsed !== null && Number.isFinite(parsed) ? parsed : null }
+          : p
+      )
+    );
+  }
+
+  function handleSearchMarginChange(id: string, value: string) {
+    const parsed = value.trim() === "" ? null : parseInt(value, 10);
+    setPoints((prev) =>
+      prev.map((p) =>
+        p.id === id
+          ? {
+              ...p,
+              initialSearchMarginPx: parsed !== null && Number.isFinite(parsed) && parsed > 0 ? parsed : null,
+            }
           : p
       )
     );
@@ -337,6 +375,18 @@ export default function PointSelector({
               ) : (
                 <span className="text-xs text-zinc-500">x={point.xColumn}px</span>
               )}
+              <label className="flex items-center gap-1 text-xs">
+                First-frame search ±px:
+                <input
+                  type="number"
+                  min={1}
+                  step="1"
+                  value={point.initialSearchMarginPx ?? DEFAULT_INITIAL_SEARCH_MARGIN_PX}
+                  onChange={(event) => handleSearchMarginChange(point.id, event.target.value)}
+                  aria-label={`First-frame search margin in pixels for ${point.label}`}
+                  className="w-16 rounded border border-zinc-300 px-2 py-1 dark:border-zinc-700 dark:bg-zinc-900"
+                />
+              </label>
               <button
                 type="button"
                 onClick={() => handleRemove(point.id)}

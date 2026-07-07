@@ -5,6 +5,7 @@ import {
   computeGradient,
   findSurfaceEdge,
   SurfaceTracker,
+  DEFAULT_CONFIDENCE_THRESHOLD,
 } from "./surfaceDetector";
 
 const WIDTH = 100;
@@ -96,11 +97,28 @@ describe("extractColumnProfile + findSurfaceEdge", () => {
       expect(value).toBe(0);
     }
   });
+
+  it("flags lowConfidence when the peak gradient isn't clearly stronger than the background (Phase 16)", () => {
+    // A flat, uniform column has no real edge at all — every gradient sample
+    // is ~equally (near-zero) noisy, so no single point dominates.
+    const flatData = new Uint8ClampedArray(WIDTH * HEIGHT * 4).fill(128);
+    const flatImageData = { data: flatData, width: WIDTH, height: HEIGHT, colorSpace: "srgb" } as ImageData;
+    const flatProfile = extractColumnProfile(flatImageData, 50);
+    const flatResult = findSurfaceEdge(flatProfile);
+    expect(flatResult.lowConfidence).toBe(true);
+
+    // A clean, unambiguous step edge should NOT be flagged.
+    const cleanImageData = makeImageData(WIDTH, HEIGHT, 100);
+    const cleanProfile = extractColumnProfile(cleanImageData, 50);
+    const cleanResult = findSurfaceEdge(cleanProfile);
+    expect(cleanResult.confidence).toBeGreaterThan(DEFAULT_CONFIDENCE_THRESHOLD);
+    expect(cleanResult.lowConfidence).toBe(false);
+  });
 });
 
 describe("SurfaceTracker", () => {
   it("tracks a slowly moving surface across frames", () => {
-    const tracker = new SurfaceTracker(50, 3, 40);
+    const tracker = new SurfaceTracker(50, 100, 3, 40);
     const trueEdges = [100, 101, 103, 104, 103, 101, 100, 99, 98, 99];
     const detected: number[] = [];
 
@@ -120,7 +138,7 @@ describe("SurfaceTracker", () => {
   });
 
   it("does not jump to a fake edge outside the search margin", () => {
-    const tracker = new SurfaceTracker(50, 3, 40);
+    const tracker = new SurfaceTracker(50, 100, 3, 40);
 
     const baselineFrame = makeImageData(WIDTH, HEIGHT, 100);
     const baseline = tracker.detect(baselineFrame);
@@ -134,17 +152,46 @@ describe("SurfaceTracker", () => {
     expect(Math.abs(result.yPosition - 101)).toBeLessThanOrEqual(3);
   });
 
-  it("resets lastY back to null", () => {
-    const tracker = new SurfaceTracker(50);
+  it("never performs an unbounded whole-column search on the first frame, even for a fake edge far stronger than the real one (Phase 16 — root cause of locking onto a ruler/phone/window instead of the water surface)", () => {
+    const initialSeedY = 150;
+    const initialSearchMarginPx = 60;
+    // A very strong fake edge at y=20 (max possible contrast, 0 -> 255) well
+    // outside [90, 210] — if the first-frame search were still unbounded,
+    // this would win easily over the real (lower-contrast) edge near the seed.
+    const imageData = makeImageData(WIDTH, HEIGHT, 100, {
+      extraEdge: { y: 20, value: 255, bandHeight: 2 },
+    });
+    // Force the strongest signal to be the fake edge, not the real one, by
+    // using a huge contrast band right at y=20 against a uniform background.
+    const tracker = new SurfaceTracker(50, initialSeedY, 3, 40, 2.0, initialSearchMarginPx);
+    const result = tracker.detect(imageData);
+
+    expect(result.yPosition).toBeGreaterThanOrEqual(initialSeedY - initialSearchMarginPx);
+    expect(result.yPosition).toBeLessThanOrEqual(initialSeedY + initialSearchMarginPx);
+  });
+
+  it("still detects correctly when initialSeedY is close to the real surface (no regression for the common case)", () => {
+    const tracker = new SurfaceTracker(50, 105, 3, 40);
+    const imageData = makeImageData(WIDTH, HEIGHT, 100);
+    const result = tracker.detect(imageData);
+    expect(Math.abs(result.yPosition - 100)).toBeLessThanOrEqual(3);
+  });
+
+  it("resets lastY back to null, re-applying the bounded initial-seed search rather than an unbounded one (Phase 16: reset() must not reopen the old whole-column search)", () => {
+    const initialSeedY = 100;
+    const initialSearchMarginPx = 60;
+    const tracker = new SurfaceTracker(50, initialSeedY, 3, 40, 2.0, initialSearchMarginPx);
     tracker.detect(makeImageData(WIDTH, HEIGHT, 100));
 
     tracker.reset();
 
-    // After reset, the next detect() should search the whole image again
-    // (i.e. it should still find a far-away edge instead of being constrained).
-    const farFrame = makeImageData(WIDTH, HEIGHT, 150);
+    // A "surface" far outside the initial seed's margin ([40, 160]) must
+    // NOT be found even right after reset — the old behavior (search the
+    // whole image again) is exactly the bug this phase removes.
+    const farFrame = makeImageData(WIDTH, HEIGHT, 250);
     const result = tracker.detect(farFrame);
-    expect(Math.abs(result.yPosition - 150)).toBeLessThanOrEqual(3);
+    expect(result.yPosition).toBeGreaterThanOrEqual(initialSeedY - initialSearchMarginPx);
+    expect(result.yPosition).toBeLessThanOrEqual(initialSeedY + initialSearchMarginPx);
   });
 });
 

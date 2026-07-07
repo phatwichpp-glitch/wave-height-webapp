@@ -22,6 +22,8 @@ const SAMPLE_CONFIG: BatchConfig = {
       baselineY: 120,
       baselineValueCm: null,
       xOffsetCm: 0,
+      initialGuessPixelY: 120,
+      initialSearchMarginPx: null,
     },
   ],
   videos: [

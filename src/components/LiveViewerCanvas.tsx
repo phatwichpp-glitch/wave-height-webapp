@@ -59,15 +59,24 @@ export default function LiveViewerCanvas({
       ctx.stroke();
       ctx.restore();
 
-      // Detected surface position marker.
+      // Detected surface position marker — swaps to a warning color instead
+      // of the point's own color when confidence is low (Phase 16), so a
+      // shaky/uncertain detection stands out immediately in the live preview
+      // rather than blending in as if it were a normal, trusted lock.
+      const markerColor = detection.lowConfidence ? "#f59e0b" : detection.color;
       ctx.beginPath();
       ctx.arc(detection.xColumn, detection.yPosition, 5, 0, Math.PI * 2);
-      ctx.fillStyle = detection.color;
+      ctx.fillStyle = markerColor;
       ctx.fill();
+      if (detection.lowConfidence) {
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = "#dc2626";
+        ctx.stroke();
+      }
 
       // Confidence readout next to the marker, to spot suspiciously low-confidence frames.
-      ctx.fillStyle = detection.color;
-      ctx.font = "10px sans-serif";
+      ctx.fillStyle = markerColor;
+      ctx.font = detection.lowConfidence ? "bold 10px sans-serif" : "10px sans-serif";
       ctx.fillText(
         detection.confidence.toFixed(1),
         detection.xColumn + 8,

@@ -1,5 +1,5 @@
 import type { CalibrationData, MeasurementPoint, RulerCalibration, WaveDataPoint } from "@/types/wave";
-import { SurfaceTracker } from "@/lib/surfaceDetector";
+import { SurfaceTracker, DEFAULT_INITIAL_SEARCH_MARGIN_PX } from "@/lib/surfaceDetector";
 import { RulerCalibrationTracker } from "@/lib/rulerTracker";
 import { resampleToUniformGrid } from "@/lib/resample";
 import type {
@@ -16,8 +16,15 @@ export interface DetectionResult {
   xColumn: number;
   yPosition: number;
   confidence: number;
+  lowConfidence: boolean;
   color: string;
   baselineY: number;
+}
+
+/** A point's per-frame first-frame search range: bounded around its clicked initialGuessPixelY rather than the whole column, so tracking can't lock onto an unrelated high-contrast object elsewhere in frame (Phase 16). Exported for reuse by frameCallbackProcessor.ts's identical first-frame logic. */
+export function initialSearchRangeFor(point: MeasurementPoint): [number, number] {
+  const margin = point.initialSearchMarginPx ?? DEFAULT_INITIAL_SEARCH_MARGIN_PX;
+  return [point.initialGuessPixelY - margin, point.initialGuessPixelY + margin];
 }
 
 export interface RulerTrackingOptions {
@@ -248,7 +255,15 @@ export async function computeAutoBaselines(
     video.videoWidth
   );
   const trackers = pending.map(
-    (_, i) => new SurfaceTracker(relativeX[i], columnWidth, searchMarginPx, smoothSigma)
+    (point, i) =>
+      new SurfaceTracker(
+        relativeX[i],
+        point.initialGuessPixelY,
+        columnWidth,
+        searchMarginPx,
+        smoothSigma,
+        point.initialSearchMarginPx ?? DEFAULT_INITIAL_SEARCH_MARGIN_PX
+      )
   );
   const samplesByPoint = new Map<string, number[]>(pending.map((point) => [point.id, []]));
 
@@ -438,8 +453,15 @@ export async function processVideo(
 
       const pointRequests: PointRequest[] = points.map((point, idx) => {
         const lastY = lastYByPoint.get(point.id) ?? null;
-        const searchRange: [number, number] | null =
-          lastY === null ? null : [lastY - searchMarginPx, lastY + searchMarginPx];
+        // First frame (no prior lock): search only a bounded margin around
+        // where the user clicked, never the whole column — an unbounded
+        // search here is what let tracking lock onto an unrelated
+        // high-contrast object (a ruler tick, a phone edge, a window frame)
+        // instead of the real water surface (Phase 16 fix).
+        const searchRange: [number, number] =
+          lastY === null
+            ? initialSearchRangeFor(point)
+            : [lastY - searchMarginPx, lastY + searchMarginPx];
         return { pointId: point.id, xColumnRelative: relativeX[idx], searchRange };
       });
 
@@ -480,6 +502,7 @@ export async function processVideo(
           xColumn: currentXColumn(point),
           yPosition: response.yPosition,
           confidence: response.confidence,
+          lowConfidence: response.lowConfidence,
           color: point.color,
           baselineY,
         });

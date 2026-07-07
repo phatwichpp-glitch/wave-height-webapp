@@ -154,6 +154,67 @@ function createMockCanvasWithVerticalEdges(
   } as unknown as HTMLCanvasElement;
 }
 
+// A mock canvas with a strong, constant "decoy" step edge (e.g. standing in
+// for a ruler tick or a phone/window edge elsewhere in frame) plus a much
+// weaker real water-surface edge — for proving a point's initialGuessPixelY
+// keeps first-frame detection from locking onto the decoy (Phase 16), which
+// an unbounded whole-column search would otherwise happily prefer since its
+// contrast is deliberately made far stronger than the real edge's.
+function createMockCanvasWithDecoyEdge(
+  width: number,
+  height: number,
+  decoyEdgeY: number,
+  realEdgeY: number
+) {
+  let canvasWidth = width;
+  let canvasHeight = height;
+
+  const ctx = {
+    drawImage() {
+      /* no-op */
+    },
+    getImageData(_x: number, _y: number, w: number, h: number): ImageData {
+      const data = new Uint8ClampedArray(w * h * 4);
+      for (let row = 0; row < h; row++) {
+        let value: number;
+        if (row < decoyEdgeY) {
+          value = 50; // above the decoy: dark
+        } else if (row < realEdgeY) {
+          value = 250; // between decoy and real edge: very bright (huge jump at decoyEdgeY)
+        } else {
+          value = 200; // below the real edge: a smaller (but still real) step down
+        }
+        for (let col = 0; col < w; col++) {
+          const idx = (row * w + col) * 4;
+          data[idx] = value;
+          data[idx + 1] = value;
+          data[idx + 2] = value;
+          data[idx + 3] = 255;
+        }
+      }
+      return { data, width: w, height: h, colorSpace: "srgb" } as ImageData;
+    },
+  };
+
+  return {
+    getContext() {
+      return ctx;
+    },
+    get width() {
+      return canvasWidth;
+    },
+    set width(value: number) {
+      canvasWidth = value;
+    },
+    get height() {
+      return canvasHeight;
+    },
+    set height(value: number) {
+      canvasHeight = value;
+    },
+  } as unknown as HTMLCanvasElement;
+}
+
 // A mock canvas whose getImageData renders two things depending on which
 // region is queried: a striped ruler tick pattern inside `rulerRoi`, and a
 // static air/water edge (at `edgeY`) everywhere else — enough to exercise
@@ -318,12 +379,12 @@ class MockWorker {
         point.xColumnRelative,
         message.columnWidth
       );
-      const { yPosition, confidence } = findSurfaceEdge(
+      const { yPosition, confidence, lowConfidence } = findSurfaceEdge(
         profile,
         point.searchRange,
         message.smoothSigma
       );
-      return { pointId: point.pointId, yPosition, confidence };
+      return { pointId: point.pointId, yPosition, confidence, lowConfidence };
     });
 
     queueMicrotask(() => {
@@ -472,6 +533,8 @@ describe("processVideo", () => {
       baselineY: 100,
       baselineValueCm: null,
       xOffsetCm: 0,
+      initialGuessPixelY: 100,
+      initialSearchMarginPx: null,
     },
   ];
 
@@ -515,6 +578,42 @@ describe("processVideo", () => {
     expect(result.p1.length).toBe(10);
   });
 
+  it("does not lock onto a strong decoy edge (e.g. a ruler tick or window frame) on the first frame — auto-baseline AND the main loop both stay within initialGuessPixelY's bounded margin (Phase 16)", async () => {
+    const video = createMockVideo({ videoWidth: 100, videoHeight: 200, duration: 1 });
+    const decoyEdgeY = 20; // far outside any reasonable margin around the real surface
+    const realEdgeY = 150;
+    const canvas = createMockCanvasWithDecoyEdge(100, 200, decoyEdgeY, realEdgeY);
+
+    const point: MeasurementPoint = {
+      id: "p1",
+      xColumn: 50,
+      label: "Point 1",
+      color: "#3b82f6",
+      baselineY: null, // forces computeAutoBaselines, the other place this bug hides
+      baselineValueCm: null,
+      xOffsetCm: 0,
+      initialGuessPixelY: realEdgeY,
+      initialSearchMarginPx: null, // default ±60 -> window [90, 210], excludes the decoy at 20
+    };
+
+    const result = await processVideo(video, canvas, calibration, {
+      points: [point],
+      columnWidth: 3,
+      searchMarginPx: 40,
+      smoothSigma: 2.0,
+      sampleRateHz: 10,
+    });
+
+    expect(result.p1.length).toBe(10);
+    // The real edge is constant at 150 and the auto-computed baseline should
+    // also land near 150 (both bounded to the same bogus-free window), so
+    // elevation should stay near zero throughout — a decoy lock at y=20
+    // would instead produce a large, obviously-wrong offset.
+    for (const sample of result.p1) {
+      expect(Math.abs(sample.elevationCm)).toBeLessThanOrEqual(2);
+    }
+  });
+
   it("tracks two points independently when their edges move in opposite directions", async () => {
     const video = createMockVideo({ videoWidth: 100, videoHeight: 200, duration: 1 });
     // Left half (x<50): edge moves down over time. Right half: edge moves up.
@@ -531,6 +630,8 @@ describe("processVideo", () => {
         baselineY: 100,
         baselineValueCm: null,
         xOffsetCm: 0,
+        initialGuessPixelY: 100,
+        initialSearchMarginPx: null,
       },
       {
         id: "right",
@@ -540,6 +641,8 @@ describe("processVideo", () => {
         baselineY: 100,
         baselineValueCm: null,
         xOffsetCm: 0,
+        initialGuessPixelY: 100,
+        initialSearchMarginPx: null,
       },
     ];
 
@@ -658,6 +761,8 @@ describe("processVideo", () => {
       baselineY: null,
       baselineValueCm: 5, // -> baselineY = 0 + (5 - 0) * 20 = 100
       xOffsetCm: 1.5, // -> currentXColumn = rulerCenterX(10) + 1.5 * 20 = 40
+      initialGuessPixelY: 100,
+      initialSearchMarginPx: null,
     };
 
     const result = await processVideo(video, canvas, staleCalibration, {
@@ -720,6 +825,8 @@ describe("processVideo", () => {
       // Before the rounding fix this produced NaN profiles; before the
       // Math.abs fix a positive offset would land LEFT of the ruler (x < 10).
       xOffsetCm: 1.37,
+      initialGuessPixelY: 100,
+      initialSearchMarginPx: null,
     };
 
     const result = await processVideo(video, canvas, staleCalibration, {
@@ -780,6 +887,8 @@ describe("processVideo — analysisStartTimeS (Phase 12)", () => {
         baselineY: 100, // fixed baseline: isolates this test from auto-baseline timing
         baselineValueCm: null,
         xOffsetCm: 0,
+        initialGuessPixelY: 100,
+        initialSearchMarginPx: null,
       },
     ];
 
@@ -826,6 +935,8 @@ describe("processVideo — analysisStartTimeS (Phase 12)", () => {
         baselineY: null, // forces auto-baseline detection
         baselineValueCm: null,
         xOffsetCm: 0,
+        initialGuessPixelY: 100,
+        initialSearchMarginPx: null,
       },
     ];
 
@@ -861,6 +972,8 @@ describe("processVideoAuto", () => {
       baselineY: 100,
       baselineValueCm: null,
       xOffsetCm: 0,
+      initialGuessPixelY: 100,
+      initialSearchMarginPx: null,
     },
   ];
 

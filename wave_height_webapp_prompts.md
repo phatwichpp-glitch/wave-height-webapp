@@ -982,6 +982,63 @@ export async function processVideoAuto(
 
 ---
 
+## Phase 16 (แก้ด่วน): จุดตรวจจับกระโดดไปติด Edge ผิดในเฟรมแรก (ไม่ใช่ผิวน้ำ)
+
+```
+ทำงานต่อจากโปรเจกต์ wave-height-webapp (ตอนนี้ทำถึง Phase 15 แล้ว) แก้บั๊กเร่งด่วน: จุดตรวจจับผิวน้ำ (MeasurementPoint) ไปล็อกติดตำแหน่งผิดในเฟรมแรก (เช่น ขีดไม้บรรทัด, ขอบจอมือถือ, กรอบหน้าต่าง) แทนที่จะเป็นผิวน้ำจริง แล้วค้างอยู่ตำแหน่งผิดนั้นตลอดทั้งคลิปเพราะเฟรมถัดไปค้นหาแค่บริเวณใกล้เคียงตำแหน่งที่ล็อกผิดไว้แล้ว
+
+สาเหตุ (ยืนยันจากพฤติกรรมเดิมของ SurfaceTracker.detect ตั้งแต่ Phase 2): เมื่อยังไม่มีตำแหน่งก่อนหน้า (เฟรมแรกของแต่ละจุดวัด) โค้ดปัจจุบันค้นหา strongest gradient แบบไม่จำกัดขอบเขต (search ทั่วทั้งภาพ/ทั่วทั้งคอลัมน์) ซึ่งใช้ได้ในสถานการณ์ทดสอบง่าย ๆ ตอนต้น แต่ในเฟรมจริงที่มีวัตถุ contrast สูงหลายอย่างในเฟรม (ไม้บรรทัด, มือถือ, กรอบหน้าต่าง) ทำให้ไปล็อกผิดวัตถุตั้งแต่เฟรมแรก
+
+ทางแก้: ใช้ตำแหน่งพิกเซลที่ผู้ใช้คลิกตอนเพิ่ม MeasurementPoint (จาก Phase 7/15 UI) เป็นจุดศูนย์กลางการค้นหาของเฟรมแรกเสมอ (มี margin รอบ ๆ พอสมควร ไม่ใช่ทั่วภาพ) แทนการค้นหาแบบไม่มีขอบเขต
+
+ส่วนที่ 1 — แก้ src/types/wave.ts:
+เพิ่ม field ใน MeasurementPoint:
+  initialGuessPixelY: number;   // ตำแหน่ง y พิกเซลที่ผู้ใช้คลิกตอนเพิ่มจุดนี้ บนเฟรมอ้างอิงที่ใช้ calibrate (จาก Phase 15) — ใช้เป็น seed การค้นหาเฟรมแรกเท่านั้น ไม่ใช่ตำแหน่งจริงที่ใช้คำนวณผลลัพธ์ (อันนั้นมาจาก tracking ทุกเฟรมตามปกติ)
+
+ส่วนที่ 2 — แก้ src/lib/surfaceDetector.ts (SurfaceTracker จาก Phase 2/7):
+แก้ constructor และ detect() ให้รับ initial seed แทนพฤติกรรมเดิม:
+
+export class SurfaceTracker {
+  constructor(
+    private xColumn: number,
+    private columnWidth: number = 3,
+    private searchMarginPx: number = 40,
+    private smoothSigma: number = 2.0,
+    private initialSeedY: number,              // บังคับต้องระบุเสมอ ไม่มี default เป็น "ค้นหาทั่วภาพ" อีกต่อไป
+    private initialSearchMarginPx: number = 60  // margin รอบ seed สำหรับเฟรมแรกโดยเฉพาะ (กว้างกว่า searchMarginPx ปกตินิดหน่อยเผื่อผู้ใช้คลิกไม่เป๊ะ แต่ยังคงจำกัดขอบเขตอยู่ ไม่ใช่ทั่วภาพ)
+  ) {}
+
+  detect(imageData: ImageData): EdgeResult
+  - ถ้า this.lastY === null (เฟรมแรก): searchRange = [initialSeedY - initialSearchMarginPx, initialSeedY + initialSearchMarginPx] แทนการค้นหาทั่วภาพแบบเดิม
+  - ถ้ามี lastY แล้ว (เฟรมถัดไป): ทำงานเหมือนเดิม (searchRange รอบ lastY ด้วย searchMarginPx ปกติ)
+
+เพิ่ม safety check ใน detect() (ทั้งเฟรมแรกและเฟรมถัดไป): ถ้า confidence ที่ได้ต่ำกว่า threshold ที่กำหนดไว้ (reuse confidence_threshold concept จาก Phase 3) ให้ยัง return ผลลัพธ์ตามปกติแต่ติด flag lowConfidence: true เพิ่มใน EdgeResult (แก้ interface EdgeResult เพิ่ม field นี้) เพื่อให้ชั้นบนเลือกทำอะไรต่อได้ (เช่นแสดงเตือนใน UI) โดยไม่ต้อง throw error กลาง pipeline
+
+ส่วนที่ 3 — แก้ src/workers/videoProcessing.worker.ts (จาก Phase 7):
+- แก้ message format ที่ initialize SurfaceTracker ให้ส่ง initialGuessPixelY ของแต่ละ point (แปลงเป็นพิกัดสัมพัทธ์กับ crop offset ให้ถูกต้องเหมือนที่ทำกับพิกัดอื่น ๆ ใน Phase 7) เข้าไปตอนสร้าง Map<pointId, SurfaceTracker> แทนการเรียก constructor แบบไม่มี seed เหมือนเดิม
+
+ส่วนที่ 4 — แก้ src/lib/videoProcessor.ts (auto-baseline detection จาก Phase 3):
+- จุดที่อ่าน 30 เฟรมแรกเพื่อหา baseline อัตโนมัติ (เมื่อ baselineValueCm เป็น null) ต้องส่ง initialGuessPixelY ของ point นั้นเข้าไปด้วยเช่นกัน ไม่ใช่ปล่อยให้ auto-baseline detection ค้นหาทั่วภาพแบบเดิม (จุดนี้สำคัญมาก เพราะ auto-baseline เป็นอีกจุดหนึ่งที่ยังมีบั๊กเดียวกันซ่อนอยู่ถ้าไม่แก้คู่กัน)
+
+ส่วนที่ 5 — แก้ UI ที่รับผิดชอบเพิ่ม MeasurementPoint (จาก Phase 7/15):
+- ตอนผู้ใช้คลิกเพิ่มจุดบน canvas ให้บันทึกตำแหน่ง y ที่คลิกจริงเป็น initialGuessPixelY ทันที (ไม่ใช่แค่ใช้คำนวณ xOffsetCm/baselineValueCm เฉย ๆ เหมือนที่ผ่านมา)
+- เพิ่ม visual feedback: หลังคลิกจุด ให้วาดกรอบสี่เหลี่ยมจาง ๆ แสดง initialSearchMarginPx รอบจุดที่คลิกไว้บน canvas preview ด้วย เพื่อให้ผู้ใช้เห็นด้วยตาว่าระบบจะค้นหาผิวน้ำเฉพาะในกรอบนี้เท่านั้นในเฟรมแรก ถ้าคลิกตำแหน่งที่ผิวน้ำไม่ได้อยู่ในกรอบนี้แน่ ๆ (เช่นคลื่นสูงเกิน margin ที่ตั้งไว้) ให้ผู้ใช้ขยาย initialSearchMarginPx เอง (เพิ่ม input ปรับค่านี้ต่อจุดได้ใน UI เดียวกัน)
+
+ส่วนที่ 6 — เพิ่มการแสดงผล lowConfidence flag (จากส่วนที่ 2) ใน LiveViewerCanvas (Phase 8):
+- ถ้าเฟรมไหน detection result มี lowConfidence: true ให้เปลี่ยนสีจุด overlay ของจุดนั้นเป็นสีเตือน (เช่น เหลือง/แดงกระพริบ) แทนสีปกติของจุดนั้น ช่วยให้ผู้ใช้สังเกตเห็นช่วงที่ตรวจจับไม่มั่นใจได้ทันทีระหว่าง debug ด้วยตา
+
+เขียน unit test ในไฟล์ src/lib/surfaceDetector.test.ts (แก้เพิ่ม):
+- test ว่า SurfaceTracker กับเฟรมแรกที่มี edge แรงอยู่นอก initialSearchMarginPx (เช่น จำลอง edge ปลอมแรงมากที่ y=20 แต่ initialSeedY=150, initialSearchMarginPx=60) ต้อง**ไม่ไปติด** edge ปลอมนั้น (ตรวจว่า yPosition ที่ได้อยู่ในช่วง [150-60, 150+60] เท่านั้น ต่อให้ edge ปลอมนอกช่วงจะแรงกว่ามากแค่ไหนก็ตาม)
+- test ว่าถ้า initialSeedY ใกล้เคียงตำแหน่งผิวน้ำจริง (ทดสอบด้วยภาพสังเคราะห์เหมือน Phase 2 เดิม) ระบบยัง detect ตำแหน่งถูกต้องตามปกติ (ไม่ regression พฤติกรรมที่ถูกอยู่แล้ว)
+- test lowConfidence flag ทำงานถูกต้องเมื่อ confidence ต่ำกว่า threshold ที่กำหนด
+
+รันเทสด้วย `npm run test` และทดสอบด้วยมือ (`npm run dev`) กับวิดีโอที่เจอปัญหาเดิม (ภาพที่มีไม้บรรทัด+มือถือ+หน้าต่าง contrast สูงในเฟรม): คลิกเพิ่มจุดวัดที่ตำแหน่งผิวน้ำจริงให้ครบทุกจุด แล้วรันประมวลผล เปิด LiveViewerCanvas ดูว่าจุด overlay เกาะอยู่ที่ผิวน้ำจริงตั้งแต่เฟรมแรกเลยหรือไม่ ไม่กระโดดไปที่อื่นอีกต่อไป
+```
+
+**เกณฑ์ผ่านเฟส:** unit test ผ่านทั้งหมด โดยเฉพาะเทส "ไม่ติด edge ปลอมนอก search margin" ต้องผ่านชัดเจน, ทดสอบด้วยมือกับวิดีโอจริงที่เจอปัญหาแล้วเห็นจุด overlay เกาะผิวน้ำตั้งแต่เฟรมแรกจริง — ถ้ายังหลุดไปที่อื่นอยู่ ให้ตรวจว่า initialGuessPixelY ถูกส่งเข้า worker ถูกต้องจริงหรือยังมีจุดไหนหลงเหลือพฤติกรรม "ค้นหาทั่วภาพ" แบบเดิมอยู่ (โดยเฉพาะจุด auto-baseline ในส่วนที่ 4 ที่มักถูกมองข้าม)
+
+---
+
 ## หมายเหตุสำคัญเฉพาะเวอร์ชัน Client-Side
 
 - **ความเร็วในการประมวลผล**: การ seek วิดีโอทีละเฟรมผ่าน `currentTime` มี overhead กว่าการอ่านไฟล์ตรง ๆ แบบ Python/OpenCV พอสมควร วิดีโอยาวหรือ sample rate สูงอาจใช้เวลานานในเบราว์เซอร์ — ถ้าพบว่าช้าเกินไปในทางปฏิบัติ ให้พิจารณาลด sampleRateHz ลง หรือขอ prompt เฟสเสริมสำหรับใช้ `requestVideoFrameCallback` (แม่นยำกว่าและเร็วกว่าการ seek แต่รองรับเฉพาะ Chromium-based browsers)

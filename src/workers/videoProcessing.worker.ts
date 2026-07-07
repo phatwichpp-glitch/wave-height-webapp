@@ -17,6 +17,7 @@ export interface PointResult {
   pointId: string;
   yPosition: number;
   confidence: number;
+  lowConfidence: boolean;
 }
 
 export type WorkerResponseMessage = PointResult[];
@@ -46,8 +47,12 @@ workerSelf.onmessage = (event) => {
 
   const results: PointResult[] = points.map((point) => {
     const profile = extractColumnProfile(imageData, point.xColumnRelative, columnWidth);
-    const { yPosition, confidence } = findSurfaceEdge(profile, point.searchRange, smoothSigma);
-    return { pointId: point.pointId, yPosition, confidence };
+    const { yPosition, confidence, lowConfidence } = findSurfaceEdge(
+      profile,
+      point.searchRange,
+      smoothSigma
+    );
+    return { pointId: point.pointId, yPosition, confidence, lowConfidence };
   });
 
   workerSelf.postMessage(results);

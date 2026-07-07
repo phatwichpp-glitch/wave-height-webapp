@@ -12,6 +12,8 @@ const mockPoints: MeasurementPoint[] = [
     baselineY: 100,
     baselineValueCm: null,
     xOffsetCm: 0,
+    initialGuessPixelY: 100,
+    initialSearchMarginPx: null,
   },
   {
     id: "p2",
@@ -21,6 +23,8 @@ const mockPoints: MeasurementPoint[] = [
     baselineY: 100,
     baselineValueCm: null,
     xOffsetCm: 0,
+    initialGuessPixelY: 100,
+    initialSearchMarginPx: null,
   },
 ];
 

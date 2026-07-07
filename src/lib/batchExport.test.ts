@@ -22,6 +22,8 @@ describe("exportBatchAsZip", () => {
             baselineY: 100,
             baselineValueCm: null,
             xOffsetCm: 0,
+            initialGuessPixelY: 100,
+            initialSearchMarginPx: null,
           },
         ],
         rawData: {
@@ -89,6 +91,8 @@ describe("exportBatchAsZip", () => {
             baselineY: 100,
             baselineValueCm: null,
             xOffsetCm: 0,
+            initialGuessPixelY: 100,
+            initialSearchMarginPx: null,
           },
         ],
         rawData: { p1: [{ timeS: 0, elevationCm: 1, confidence: 3 }] },

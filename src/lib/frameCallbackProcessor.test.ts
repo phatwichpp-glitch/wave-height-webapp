@@ -199,8 +199,8 @@ class MockWorker {
   postMessage(message: WorkerRequestMessage) {
     const results = message.points.map((point: PointRequest) => {
       const profile = extractColumnProfile(message.imageData, point.xColumnRelative, message.columnWidth);
-      const { yPosition, confidence } = findSurfaceEdge(profile, point.searchRange, message.smoothSigma);
-      return { pointId: point.pointId, yPosition, confidence };
+      const { yPosition, confidence, lowConfidence } = findSurfaceEdge(profile, point.searchRange, message.smoothSigma);
+      return { pointId: point.pointId, yPosition, confidence, lowConfidence };
     });
     queueMicrotask(() => {
       this.messageHandlers.forEach((handler) =>
@@ -233,6 +233,8 @@ describe("processVideoWithFrameCallback", () => {
       baselineY: 100, // fixed: skips auto-baseline's own seek-based sampling
       baselineValueCm: null,
       xOffsetCm: 0,
+      initialGuessPixelY: 100,
+      initialSearchMarginPx: null,
     },
   ];
 
@@ -293,6 +295,64 @@ describe("processVideoWithFrameCallback", () => {
     expect(result.p1[1].timeS).toBeCloseTo(0.2);
     expect(result.p1[1].elevationCm).toBeCloseTo(2, 0);
     expect(video.paused).toBe(true);
+  });
+
+  it("does not lock onto a strong decoy edge on the first frame — bounded by the point's initialGuessPixelY, matching processVideo's identical fix (Phase 16)", async () => {
+    const { video, fireFrame } = createMockVideoForFrameCallback({
+      videoWidth: 100,
+      videoHeight: 200,
+      duration: 1,
+    });
+    const decoyEdgeY = 20;
+    const realEdgeY = 150;
+    const canvas = {
+      getContext() {
+        return {
+          drawImage() {
+            /* no-op */
+          },
+          getImageData(_x: number, _y: number, w: number, h: number): ImageData {
+            const data = new Uint8ClampedArray(w * h * 4);
+            for (let row = 0; row < h; row++) {
+              const value = row < decoyEdgeY ? 50 : row < realEdgeY ? 250 : 200;
+              for (let col = 0; col < w; col++) {
+                const idx = (row * w + col) * 4;
+                data[idx] = value;
+                data[idx + 1] = value;
+                data[idx + 2] = value;
+                data[idx + 3] = 255;
+              }
+            }
+            return { data, width: w, height: h, colorSpace: "srgb" } as ImageData;
+          },
+        };
+      },
+      width: 100,
+      height: 200,
+    } as unknown as HTMLCanvasElement;
+
+    const pointsWithSeed: MeasurementPoint[] = [
+      { ...points[0], baselineY: realEdgeY, initialGuessPixelY: realEdgeY },
+    ];
+
+    const resultPromise = processVideoWithFrameCallback(video, canvas, calibration, pointsWithSeed, {
+      columnWidth: 3,
+      searchMarginPx: 40,
+      smoothSigma: 2.0,
+      sampleRateHz: 10,
+    });
+    await flushAsync();
+
+    fireFrame(0.1);
+    await flushAsync();
+    fireFrame(1); // >= duration -> completion
+
+    const result = await resultPromise;
+
+    expect(result.p1.length).toBe(1);
+    // Real edge is constant at 150, seeded baseline is also 150 -> elevation
+    // near zero. A decoy lock at y=20 would produce a huge, obviously wrong offset.
+    expect(Math.abs(result.p1[0].elevationCm)).toBeLessThanOrEqual(2);
   });
 
   it("skips decoded frames arriving faster than 1/sampleRateHz instead of capturing every one (regression: capturing every decoded frame made this mode slower than seek-based for short clips)", async () => {

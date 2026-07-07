@@ -99,12 +99,24 @@ export function computeGradient(signal: Float32Array): Float32Array {
 export interface EdgeResult {
   yPosition: number;
   confidence: number;
+  /** True when `confidence` fell below the threshold — the detected edge may not be reliable (e.g. a flat/noisy column with no clear step). Detection still returns its best guess rather than throwing; callers decide what to do (e.g. flag it in a live overlay). */
+  lowConfidence: boolean;
 }
+
+// Not a rigorously derived cutoff — just a practical trigger for flagging a
+// frame as worth a second look. A clean, unambiguous step edge typically
+// scores well above this (existing tests use synthetic clean edges and
+// assert confidence > 1.0); this sits a bit above that baseline.
+export const DEFAULT_CONFIDENCE_THRESHOLD = 1.5;
+
+/** Default ±margin (px) searched around a point's initialGuessPixelY on the first frame, when the point itself doesn't override it. Shared with videoProcessor.ts/frameCallbackProcessor.ts so their inline first-frame search range matches SurfaceTracker's own default exactly. */
+export const DEFAULT_INITIAL_SEARCH_MARGIN_PX = 60;
 
 export function findSurfaceEdge(
   profile: Float32Array,
   searchRange: [number, number] | null = null,
-  smoothSigma: number = 2.0
+  smoothSigma: number = 2.0,
+  confidenceThreshold: number = DEFAULT_CONFIDENCE_THRESHOLD
 ): EdgeResult {
   const smoothed = gaussianSmooth1D(profile, smoothSigma);
   const gradient = computeGradient(smoothed);
@@ -142,25 +154,37 @@ export function findSurfaceEdge(
   const meanAbsGradient = sum / count;
   const confidence = meanAbsGradient > 0 ? maxAbsGradient / meanAbsGradient : 0;
 
-  return { yPosition, confidence };
+  return { yPosition, confidence, lowConfidence: confidence < confidenceThreshold };
 }
 
 export class SurfaceTracker {
   private lastY: number | null = null;
 
+  // `initialSeedY` is required (no default) and therefore must come before
+  // the optional/defaulted parameters below it — TypeScript doesn't allow a
+  // required parameter after one with a default value, so this differs from
+  // a strict "seed goes last" ordering; the intent (never silently fall back
+  // to an unbounded first-frame search) is what matters, not the position.
   constructor(
     private xColumn: number,
+    private initialSeedY: number,
     private columnWidth: number = 3,
     private searchMarginPx: number = 40,
-    private smoothSigma: number = 2.0
+    private smoothSigma: number = 2.0,
+    private initialSearchMarginPx: number = DEFAULT_INITIAL_SEARCH_MARGIN_PX
   ) {}
 
   detect(imageData: ImageData): EdgeResult {
     const profile = extractColumnProfile(imageData, this.xColumn, this.columnWidth);
 
-    const searchRange: [number, number] | null =
+    // First frame (no prior lock yet): search only a bounded margin around
+    // where the user actually clicked, never the whole column — an
+    // unbounded search here is exactly what let this lock onto an unrelated
+    // high-contrast object (a ruler tick, a phone edge, a window frame)
+    // elsewhere in frame instead of the real water surface (Phase 16 fix).
+    const searchRange: [number, number] =
       this.lastY === null
-        ? null
+        ? [this.initialSeedY - this.initialSearchMarginPx, this.initialSeedY + this.initialSearchMarginPx]
         : [this.lastY - this.searchMarginPx, this.lastY + this.searchMarginPx];
 
     const result = findSurfaceEdge(profile, searchRange, this.smoothSigma);

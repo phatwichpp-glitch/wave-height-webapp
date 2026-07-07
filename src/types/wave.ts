@@ -39,6 +39,10 @@ export interface MeasurementPoint {
   baselineValueCm: number | null;
   /** Horizontal distance (cm) from the ruler's center column, positive = right. Only used when ruler-based re-calibration (Phase 9) is active. */
   xOffsetCm: number;
+  /** Pixel y-position the user clicked when adding this point, on the calibration reference frame (Phase 15). Seeds the first frame's *bounded* search (Phase 16) so tracking can't lock onto an unrelated high-contrast object (a ruler tick, a phone edge, a window frame) elsewhere in the image — it is never itself the measured surface position, which always comes from per-frame tracking as before. */
+  initialGuessPixelY: number;
+  /** Overrides the default ±60px margin around initialGuessPixelY searched on the first frame. Null = use the default. Widen this if the true water surface can be further from the click than that (e.g. very large waves). */
+  initialSearchMarginPx: number | null;
 }
 
 export interface MultiPointWaveData {

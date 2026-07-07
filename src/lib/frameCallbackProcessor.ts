@@ -5,6 +5,7 @@ import {
   captureRoiFromCanvas,
   computeAutoBaselines,
   getMultiColumnCropBounds,
+  initialSearchRangeFor,
   requestFromWorker,
   type DetectionResult,
   type ProcessingOptions,
@@ -318,8 +319,11 @@ export async function processVideoWithFrameCallback(
 
       const pointRequests: PointRequest[] = points.map((point) => {
         const lastY = lastYByPoint.get(point.id) ?? null;
-        const searchRange: [number, number] | null =
-          lastY === null ? null : [lastY - searchMarginPx, lastY + searchMarginPx];
+        // First frame (no prior lock): search only a bounded margin around
+        // where the user clicked, never the whole column (Phase 16 fix —
+        // matches processVideo's identical first-frame handling).
+        const searchRange: [number, number] =
+          lastY === null ? initialSearchRangeFor(point) : [lastY - searchMarginPx, lastY + searchMarginPx];
         return {
           pointId: point.id,
           xColumnRelative: frame.relativeXByPointId.get(point.id)!,
@@ -353,6 +357,7 @@ export async function processVideoWithFrameCallback(
           xColumn: frame.xColumnByPointId.get(point.id)!,
           yPosition: response.yPosition,
           confidence: response.confidence,
+          lowConfidence: response.lowConfidence,
           color: point.color,
           baselineY,
         });

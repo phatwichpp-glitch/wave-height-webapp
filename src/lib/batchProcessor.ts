@@ -71,6 +71,20 @@ function parseMeasurementPoint(value: unknown, path: string): MeasurementPoint {
     baselineY: assertNullableNumber(value.baselineY, `${path}.baselineY`),
     baselineValueCm: assertNullableNumber(value.baselineValueCm, `${path}.baselineValueCm`),
     xOffsetCm: value.xOffsetCm === undefined ? 0 : assertNumber(value.xOffsetCm, `${path}.xOffsetCm`),
+    // Falls back to baselineY (the still-water pixel row, when known) since a
+    // batch config's points are hand-written rather than clicked — the real
+    // water surface should be near still-water level on the first frame too.
+    initialGuessPixelY:
+      value.initialGuessPixelY !== undefined
+        ? assertNumber(value.initialGuessPixelY, `${path}.initialGuessPixelY`)
+        : assertNumber(
+            value.baselineY,
+            `${path}.initialGuessPixelY (required — or set "baselineY", used as a fallback seed when initialGuessPixelY is omitted)`
+          ),
+    initialSearchMarginPx: assertNullableNumber(
+      value.initialSearchMarginPx,
+      `${path}.initialSearchMarginPx`
+    ),
   };
 }
 

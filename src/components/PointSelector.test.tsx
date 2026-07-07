@@ -17,6 +17,10 @@ function installCanvasStub() {
     moveTo: noop,
     lineTo: noop,
     stroke: noop,
+    save: noop,
+    restore: noop,
+    setLineDash: noop,
+    strokeRect: noop,
   };
 
   vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(

@@ -23,6 +23,8 @@ const validConfig: BatchConfig = {
       baselineY: 100,
       baselineValueCm: null,
       xOffsetCm: 0,
+      initialGuessPixelY: 100,
+      initialSearchMarginPx: null,
     },
   ],
   videos: [{ fileNamePattern: "video1.mp4" }],
@@ -164,6 +166,8 @@ describe("processBatch", () => {
       baselineY: 50,
       baselineValueCm: null,
       xOffsetCm: 0,
+      initialGuessPixelY: 100,
+      initialSearchMarginPx: null,
     };
     const configWithOverride: BatchConfig = {
       ...validConfig,
