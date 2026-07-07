@@ -9,6 +9,17 @@ interface PointSelectorProps {
   maxPoints?: number;
   /** When set, clicks are interpreted as an offset (cm) from the ruler's center column instead of a raw pixel column, and each point needs a baseline entered in cm. */
   rulerCalibration?: RulerCalibration | null;
+  /**
+   * The exact video time (seconds) calibration was performed at (see
+   * CalibrationCanvas/RulerCalibrationPanel's own onCalibrated referenceTimeS).
+   * Measurement points MUST be clicked on this same frame — a pixel column
+   * clicked on any other frame doesn't correspond to the physical location
+   * the ruler/fixed-distance calibration was measured against, especially if
+   * the camera moved between the two (Phase 15 fix: this component used to
+   * always show the video's frame at t=0 regardless of what frame
+   * calibration actually used). Defaults to 0 if not supplied.
+   */
+  referenceTimeS?: number | null;
 }
 
 const DEFAULT_COLORS = [
@@ -33,12 +44,18 @@ export default function PointSelector({
   onChange,
   maxPoints = 8,
   rulerCalibration = null,
+  referenceTimeS = null,
 }: PointSelectorProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  // Tracks the last referenceTimeS this component actually seeked to, so a
+  // later *change* (as opposed to the first time it's ever set) can be told
+  // apart from the initial mount — only a real change should clear points.
+  const appliedReferenceTimeSRef = useRef<number | null>(null);
 
   const [isFrameReady, setIsFrameReady] = useState(false);
   const [points, setPoints] = useState<MeasurementPoint[]>([]);
+  const [referenceFrameChanged, setReferenceFrameChanged] = useState(false);
   // Bumped on every 'loadeddata'/'seeked' so the redraw effect below re-runs.
   // See the effect's own comment for why there's no one-shot "draw once" path.
   const [frameVersion, setFrameVersion] = useState(0);
@@ -61,6 +78,8 @@ export default function PointSelector({
 
     setIsFrameReady(false);
     setPoints([]);
+    setReferenceFrameChanged(false);
+    appliedReferenceTimeSRef.current = null;
 
     let cancelled = false;
     function bumpFrame() {
@@ -73,7 +92,9 @@ export default function PointSelector({
       if (!video) {
         return;
       }
-      video.currentTime = 0;
+      // No explicit seek here — the reference-frame effect below performs
+      // the one seek that actually matters (to referenceTimeS) as soon as
+      // isFrameReady flips true, so the video isn't seeked twice on mount.
       setIsFrameReady(true);
       bumpFrame();
       requestAnimationFrame(bumpFrame);
@@ -92,6 +113,40 @@ export default function PointSelector({
       video.removeEventListener("seeked", bumpFrame);
     };
   }, [videoUrl]);
+
+  // Seeks to the shared calibration reference frame once the video is ready,
+  // and again whenever referenceTimeS itself changes (e.g. the user redid
+  // calibration on a different frame after already picking measurement
+  // points here). A *change* (not the initial seek on mount) means any
+  // existing points were clicked on what may now be a different physical
+  // scene — their pixel positions aren't safe to carry over, so they're
+  // cleared and the user is warned to re-add them, rather than silently
+  // leaving stale positions in place (Phase 15).
+  useEffect(() => {
+    if (!isFrameReady) {
+      return;
+    }
+    const video = videoRef.current;
+    if (!video) {
+      return;
+    }
+
+    const target = referenceTimeS ?? 0;
+    const previouslyApplied = appliedReferenceTimeSRef.current;
+    const isRealChange = previouslyApplied !== null && Math.abs(previouslyApplied - target) > 1e-6;
+
+    video.currentTime = target;
+    appliedReferenceTimeSRef.current = target;
+
+    if (isRealChange) {
+      setPoints((prevPoints) => {
+        if (prevPoints.length > 0) {
+          setReferenceFrameChanged(true);
+        }
+        return [];
+      });
+    }
+  }, [referenceTimeS, isFrameReady]);
 
   // Redraw the frame plus one colored vertical line per point, whenever
   // those change OR the video has settled into its real decoded frame
@@ -183,6 +238,7 @@ export default function PointSelector({
       xOffsetCm,
     };
 
+    setReferenceFrameChanged(false);
     setPoints((prev) => [...prev, newPoint]);
   }
 
@@ -216,11 +272,25 @@ export default function PointSelector({
         <p className="text-sm text-zinc-500">Loading first frame…</p>
       )}
 
+      {isFrameReady && (
+        <p className="text-xs text-zinc-500 dark:text-zinc-500">
+          Showing frame at {(referenceTimeS ?? 0).toFixed(1)}s — the same reference frame used
+          for calibration, so measurement points line up with it exactly.
+        </p>
+      )}
+
       <canvas
         ref={canvasRef}
         onClick={handleCanvasClick}
         className="w-full max-w-full cursor-crosshair rounded-lg border border-zinc-200 dark:border-zinc-800"
       />
+
+      {referenceFrameChanged && (
+        <p className="text-sm text-amber-600">
+          The calibration reference frame changed — previous measurement points were cleared
+          since they may no longer match this frame. Please re-add them.
+        </p>
+      )}
 
       <p className="text-sm text-zinc-600 dark:text-zinc-400">
         Click on the frame to add a measurement point ({points.length}/{maxPoints}).

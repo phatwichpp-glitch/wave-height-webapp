@@ -138,4 +138,78 @@ describe("PointSelector", () => {
       expect.objectContaining({ xOffsetCm: 2, baselineValueCm: 5 }),
     ]);
   });
+
+  it("seeks to referenceTimeS (the calibration frame) instead of always showing t=0 (Phase 15)", () => {
+    const handleChange = vi.fn();
+    const { container } = render(
+      <PointSelector videoUrl="blob:test" onChange={handleChange} referenceTimeS={12.4} />
+    );
+
+    const video = container.querySelector("video") as HTMLVideoElement;
+    makeFrameReady(video);
+
+    expect(video.currentTime).toBe(12.4);
+    expect(screen.getByText(/showing frame at 12\.4s/i)).toBeInTheDocument();
+  });
+
+  it("defaults to t=0 when no referenceTimeS is supplied", () => {
+    const handleChange = vi.fn();
+    const { container } = render(
+      <PointSelector videoUrl="blob:test" onChange={handleChange} />
+    );
+
+    const video = container.querySelector("video") as HTMLVideoElement;
+    makeFrameReady(video);
+
+    expect(video.currentTime).toBe(0);
+    expect(screen.getByText(/showing frame at 0\.0s/i)).toBeInTheDocument();
+  });
+
+  it("clears existing points and warns when referenceTimeS changes after points were already added — never silently keeps stale positions (Phase 15 regression)", () => {
+    const handleChange = vi.fn();
+    const { container, rerender } = render(
+      <PointSelector videoUrl="blob:test" onChange={handleChange} referenceTimeS={5} />
+    );
+
+    const video = container.querySelector("video") as HTMLVideoElement;
+    makeFrameReady(video);
+    expect(video.currentTime).toBe(5);
+
+    const canvas = container.querySelector("canvas") as HTMLCanvasElement;
+    fireEvent.click(canvas, { clientX: 100, clientY: 50 });
+    expect(screen.getByText(/1\/8/)).toBeInTheDocument();
+    expect(screen.queryByText(/reference frame changed/i)).not.toBeInTheDocument();
+
+    // Parent re-supplies a *different* reference frame (e.g. user redid
+    // calibration on another frame) while this component stays mounted.
+    rerender(
+      <PointSelector videoUrl="blob:test" onChange={handleChange} referenceTimeS={18.7} />
+    );
+
+    expect(video.currentTime).toBe(18.7);
+    expect(screen.getByText(/reference frame changed/i)).toBeInTheDocument();
+    expect(screen.getByText(/0\/8/)).toBeInTheDocument();
+    expect(handleChange).toHaveBeenLastCalledWith([]);
+
+    // Adding a new point (re-marking on the new frame) dismisses the warning.
+    fireEvent.click(canvas, { clientX: 120, clientY: 60 });
+    expect(screen.queryByText(/reference frame changed/i)).not.toBeInTheDocument();
+  });
+
+  it("does not warn when referenceTimeS is set for the first time (only a later change should)", () => {
+    const handleChange = vi.fn();
+    const { container, rerender } = render(
+      <PointSelector videoUrl="blob:test" onChange={handleChange} referenceTimeS={null} />
+    );
+
+    const video = container.querySelector("video") as HTMLVideoElement;
+    makeFrameReady(video);
+
+    rerender(
+      <PointSelector videoUrl="blob:test" onChange={handleChange} referenceTimeS={5} />
+    );
+
+    expect(video.currentTime).toBe(5);
+    expect(screen.queryByText(/reference frame changed/i)).not.toBeInTheDocument();
+  });
 });

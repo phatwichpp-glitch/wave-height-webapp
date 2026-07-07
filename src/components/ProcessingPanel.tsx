@@ -255,6 +255,7 @@ export default function ProcessingPanel({
         onChange={setPoints}
         maxPoints={MAX_POINTS}
         rulerCalibration={rulerCalibration}
+        referenceTimeS={calibrationReferenceTimeS}
       />
 
       {missingBaselines && (
