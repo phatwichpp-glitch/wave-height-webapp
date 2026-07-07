@@ -1,6 +1,7 @@
 import type { CalibrationData, MeasurementPoint, RulerCalibration, WaveDataPoint } from "@/types/wave";
 import { SurfaceTracker } from "@/lib/surfaceDetector";
 import { RulerCalibrationTracker } from "@/lib/rulerTracker";
+import { resampleToUniformGrid } from "@/lib/resample";
 import type {
   PointRequest,
   WorkerRequestMessage,
@@ -181,7 +182,7 @@ export function captureFrameAtTime(
 }
 
 /** Reads a region directly from a canvas that already has the current frame painted on it (via captureFrameAtTime), with no extra video seek needed. */
-function captureRoiFromCanvas(
+export function captureRoiFromCanvas(
   canvas: HTMLCanvasElement,
   roi: { x: number; y: number; width: number; height: number }
 ): ImageData {
@@ -212,9 +213,11 @@ function median(values: number[]): number {
  * all pending columns — rather than re-seeking the same 30 frames per point.
  * Runs on the main thread (cheap enough not to need worker offload). Not used
  * when ruler tracking is active (see processVideo) since a fixed-pixel
- * baseline would go stale under zoom.
+ * baseline would go stale under zoom. Exported for reuse by
+ * frameCallbackProcessor.ts, which needs the identical baseline behavior
+ * before switching into its own (playback-driven) main capture loop.
  */
-async function computeAutoBaselines(
+export async function computeAutoBaselines(
   video: HTMLVideoElement,
   canvas: HTMLCanvasElement,
   points: MeasurementPoint[],
@@ -274,7 +277,8 @@ async function computeAutoBaselines(
   return baselines;
 }
 
-function requestFromWorker(
+/** Exported for reuse by frameCallbackProcessor.ts's worker-consumer loop — identical request/response contract, just fed by a queue instead of a synchronous seek loop. */
+export function requestFromWorker(
   worker: Worker,
   message: WorkerRequestMessage,
   transfer: Transferable[]
@@ -493,4 +497,76 @@ export async function processVideo(
   } finally {
     worker.terminate();
   }
+}
+
+export type ProcessingMode = "auto" | "seek-based" | "frame-callback";
+
+/**
+ * Single entry point that picks between the two processing implementations:
+ * seek-based (processVideo, above — universally compatible, seeks one frame
+ * at a time) and frame-callback (processVideoWithFrameCallback,
+ * frameCallbackProcessor.ts — much faster, but only works in browsers
+ * supporting requestVideoFrameCallback, and produces irregularly-timed
+ * samples that need resampling onto a uniform grid before they match
+ * seek-based output's contract).
+ *
+ * Imports frameCallbackProcessor.ts, which itself imports several helpers
+ * back from this file — a circular import, but a safe one here: every
+ * reference on both sides is only ever used inside function bodies invoked
+ * later, never at module-evaluation time, so both modules finish
+ * initializing their exports before anything actually calls across the cycle.
+ */
+export async function processVideoAuto(
+  video: HTMLVideoElement,
+  canvas: HTMLCanvasElement,
+  calibration: CalibrationData,
+  points: MeasurementPoint[],
+  options: Omit<ProcessingOptions, "points"> & { mode?: ProcessingMode; playbackRate?: number }
+): Promise<Record<string, WaveDataPoint[]>> {
+  const { mode = "auto", playbackRate, ...restOptions } = options;
+  // processVideo (seek-based) still expects `points` bundled into its
+  // options object — re-inject it here since processVideoAuto's own
+  // signature (matching processVideoWithFrameCallback) takes it separately.
+  const processingOptions: ProcessingOptions = { ...restOptions, points };
+
+  // Dynamic import instead of a static one: this file (videoProcessor.ts) is
+  // also imported by plain seek-based-only call sites (e.g. Phase 3-9's
+  // existing usage) that never need frame-callback support at all — pulling
+  // it in unconditionally would mean it's always bundled even when unused.
+  const { processVideoWithFrameCallback, supportsVideoFrameCallback } = await import(
+    "@/lib/frameCallbackProcessor"
+  );
+
+  async function runFrameCallback(): Promise<Record<string, WaveDataPoint[]>> {
+    const rawResult = await processVideoWithFrameCallback(video, canvas, calibration, points, {
+      ...processingOptions,
+      playbackRate,
+    });
+    const durationS = video.duration - (options.analysisStartTimeS ?? 0);
+    const resampled: Record<string, WaveDataPoint[]> = {};
+    for (const point of points) {
+      resampled[point.id] = resampleToUniformGrid(
+        rawResult[point.id] ?? [],
+        options.sampleRateHz,
+        durationS
+      );
+    }
+    return resampled;
+  }
+
+  if (mode === "seek-based") {
+    return processVideo(video, canvas, calibration, processingOptions);
+  }
+  if (mode === "frame-callback") {
+    return runFrameCallback();
+  }
+
+  // mode === "auto"
+  if (supportsVideoFrameCallback()) {
+    return runFrameCallback();
+  }
+  console.warn(
+    "requestVideoFrameCallback is not supported in this browser — falling back to seek-based processing."
+  );
+  return processVideo(video, canvas, calibration, processingOptions);
 }

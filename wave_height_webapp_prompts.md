@@ -852,6 +852,99 @@ export function estimateDominantPeriod(
 
 ---
 
+## Phase 14 (เสริม): เร่งความเร็วด้วย requestVideoFrameCallback
+
+```
+ทำงานต่อจากโปรเจกต์ wave-height-webapp (ต่อจาก Phase 13 หรือเฟสล่าสุดที่ทำถึง) เพิ่มโหมดประมวลผลแบบเร็วโดยใช้ Video.requestVideoFrameCallback (rVFC) แทนการ seek ทีละเฟรมแบบเดิม (captureFrameAtTime จาก Phase 3) เป็นทางเลือกเสริม ไม่ใช่แทนที่ของเดิมทั้งหมด — ต้อง fallback ไปโหมดเดิมอัตโนมัติถ้าเบราว์เซอร์ไม่รองรับ
+
+บริบทสำคัญ: rVFC ทำงานได้เฉพาะระหว่าง**เล่นวิดีโอจริง** (ไม่ใช่ seek ไปเวลาที่ต้องการแบบสุ่มได้เหมือนเดิม) callback จะถูกเรียกครั้งละ 1 เฟรมที่ถูก decode และเตรียมแสดงผลจริง พร้อม metadata.mediaTime ที่บอกตำแหน่งเวลาที่แม่นยำของเฟรมนั้น ข้อดีคือได้ timestamp จริงแม่นยำกว่าการ seek+รอ 'seeked' event ที่มี overhead สูง (โดยเฉพาะการ seek ไป keyframe ที่ห่างกันเยอะ) ข้อเสียคือ: ผลลัพธ์ที่ได้มี timestamp ไม่สม่ำเสมอ (ไม่ตรง grid ของ sampleRateHz แบบเดิม) ต้อง resample ก่อนส่งเข้าโค้ดสถิติ (Phase 4/11) ที่มีอยู่
+
+ส่วนที่ 1 — src/lib/frameCallbackProcessor.ts (ไฟล์ใหม่):
+
+export function supportsVideoFrameCallback(): boolean
+- ตรวจสอบ typeof HTMLVideoElement !== 'undefined' && 'requestVideoFrameCallback' in HTMLVideoElement.prototype
+- ใช้ feature detection เท่านั้น ไม่ต้อง hardcode รายชื่อเบราว์เซอร์ (กัน false negative/positive เมื่อเบราว์เซอร์อื่นเพิ่ม support ในอนาคต)
+
+export interface FrameCallbackOptions extends ProcessingOptions {
+  playbackRate?: number;  // default 4 — เล่นเร็วกว่าปกติเพื่อประมวลผลไวขึ้น แต่สูงไปจะทำให้ browser drop เฟรมเยอะจนข้อมูลห่างเกินไป
+  maxQueueSize?: number;  // default 50 — จำกัดจำนวนเฟรมที่รอคิวส่งเข้า worker กัน memory บวมถ้า worker ตามไม่ทัน
+}
+
+export async function processVideoWithFrameCallback(
+  video: HTMLVideoElement,
+  canvas: HTMLCanvasElement,
+  calibration: RulerCalibration,   // จาก Phase 9
+  points: MeasurementPoint[],       // จาก Phase 7
+  options: FrameCallbackOptions
+): Promise<Record<string, WaveDataPoint[]>>
+
+การทำงาน:
+1. seek ไป options.analysisStartTimeS ก่อน (จาก Phase 12) ด้วยกลไก captureFrameAtTime เดิม (ครั้งเดียวตอนเริ่ม ไม่บ่อย ไม่มีปัญหา overhead)
+2. ตั้ง video.playbackRate = options.playbackRate
+3. สร้าง queue (array) เก็บ { imageData, mediaTime } รอประมวลผล และตัวแปรนับผลลัพธ์ที่ได้แล้ว
+4. เริ่ม rVFC loop:
+   function onFrame(now, metadata) {
+     - ถ้า video.currentTime เกิน end time ที่ต้องการ (duration เต็ม หรือ analysisEndTimeS ถ้ามี) ให้หยุดไม่ schedule ต่อ, สั่ง video.pause(), แล้วไป cleanup/resolve
+     - crop เฉพาะบริเวณที่ต้องใช้ (ทุก measurement points + ruler ROI ถ้าถึงรอบ check) แล้ว push เข้า queue พร้อม metadata.mediaTime (ปรับให้ relative กับ analysisStartTimeS)
+     - ถ้า queue.length เกิน maxQueueSize ให้ log คำเตือนและพิจารณาลด video.playbackRate ลงอัตโนมัติ (เช่นลดลงครึ่งหนึ่ง) เพื่อให้ worker ตามทัน — อธิบาย trade-off นี้ใน comment ชัดเจน
+     - เรียก video.requestVideoFrameCallback(onFrame) ต่อเนื่องเป็นลูป (ไม่ใช่ setInterval)
+   }
+   video.requestVideoFrameCallback(onFrame) เริ่มครั้งแรก แล้ว video.play()
+5. คู่ขนานกับ loop ข้างบน รัน async worker-consumer loop แยกต่างหาก: ดึงจาก queue ทีละรายการ (หรือ batch เล็ก ๆ) ส่งเข้า worker (reuse worker เดิมจาก Phase 3/7/9) ไม่ block loop การจับเฟรม
+6. เมื่อ capture loop จบ (ข้อ 4) ให้รอ queue ว่างสนิท (drain) ก่อน resolve
+7. เรียก options.onProgress ตามสัดส่วน video.currentTime / (endTime - startTime) เหมือนโหมดเดิม
+8. เรียก options.onFrameProcessed ต่อเฟรมเหมือนเดิมสำหรับ LiveViewerCanvas (Phase 8)
+9. รองรับ pause/resume (Phase 8): pause คือเรียก video.pause() ตรง ๆ (rVFC จะไม่ยิงต่อเองระหว่าง pause โดยธรรมชาติอยู่แล้ว ไม่ต้องทำอะไรเพิ่ม), resume คือ video.play() ต่อ
+10. คืนค่าเป็น Record<pointId, WaveDataPoint[]> ที่ timestamp ยังไม่สม่ำเสมอ (ยังไม่ resample ในฟังก์ชันนี้ แยกความรับผิดชอบชัดเจน)
+
+ส่วนที่ 2 — src/lib/resample.ts (ไฟล์ใหม่):
+
+export function resampleToUniformGrid(
+  data: WaveDataPoint[],
+  targetSampleRateHz: number,
+  durationS: number
+): WaveDataPoint[]
+- สร้าง grid เวลาสม่ำเสมอตั้งแต่ 0 ถึง durationS ตาม targetSampleRateHz
+- ใช้ linear interpolation ระหว่างจุดข้อมูลจริงที่ใกล้ที่สุดสองจุด (ก่อน-หลัง) ของแต่ละตำแหน่งบน grid เพื่อประมาณค่า elevationCm (และ confidence ใช้ค่าเฉลี่ยถ่วงน้ำหนักตามระยะใกล้-ไกล หรือค่าที่ใกล้ที่สุดก็พอ ระบุให้ชัดว่าเลือกวิธีไหนและทำไม)
+- จัดการขอบเขต (grid point ก่อนจุดข้อมูลแรกสุดหรือหลังจุดสุดท้าย) ด้วยการ clamp ไปใช้ค่าขอบใกล้สุดแทนการ extrapolate (กัน error สะสมนอกช่วงข้อมูลจริง)
+
+ส่วนที่ 3 — แก้ src/lib/videoProcessor.ts เพิ่ม unified entry point:
+
+export type ProcessingMode = 'auto' | 'seek-based' | 'frame-callback'
+
+export async function processVideoAuto(
+  video: HTMLVideoElement,
+  canvas: HTMLCanvasElement,
+  calibration: RulerCalibration,
+  points: MeasurementPoint[],
+  options: ProcessingOptions & { mode?: ProcessingMode; playbackRate?: number }
+): Promise<Record<string, WaveDataPoint[]>>
+- ถ้า mode === 'seek-based': เรียก processVideo เดิม (Phase 3/7/9/12) ตรง ๆ
+- ถ้า mode === 'frame-callback': เรียก processVideoWithFrameCallback แล้ว resampleToUniformGrid ผลลัพธ์แต่ละ point ก่อนคืนค่า (ให้ downstream Phase 4/11 ใช้ต่อได้แบบไม่ต้องแก้อะไรเพิ่ม)
+- ถ้า mode === 'auto' (default): เรียก supportsVideoFrameCallback() ถ้า true ใช้ frame-callback (พร้อม resample) ถ้า false fallback ไป seek-based พร้อม log แจ้งเหตุผลให้เห็นใน console (ไม่ต้อง alert ผู้ใช้แบบรบกวน UI)
+
+ส่วนที่ 4 — แก้ src/components/ProcessingPanel.tsx:
+- เพิ่ม select "โหมดประมวลผล" ตัวเลือก: Auto (แนะนำ) / Seek-based (เข้ากันได้ทุกเบราว์เซอร์) / Frame-callback (เร็ว, รองรับเฉพาะ Chromium)
+- ถ้าเลือก Frame-callback หรือ Auto ที่ตรวจพบว่ารองรับ: แสดง input playbackRate (default 4, ช่วง 1-16) พร้อม helper text เตือนว่า "ค่าสูงเกินไปอาจทำให้ browser ข้ามเฟรม ได้ข้อมูลเบาบางเกินไปสำหรับคลื่นความถี่สูง แนะนำเช็คความหนาแน่นข้อมูลที่ได้จริงหลังประมวลผล (ดูจาก confidence/จำนวนจุดข้อมูลต่อวินาที) ถ้าเบาบางเกินไปให้ลด playbackRate ลง"
+- ถ้าเบราว์เซอร์ไม่รองรับและผู้ใช้เลือก Frame-callback ตรง ๆ (ไม่ใช่ Auto) ให้แสดงข้อความแจ้งเตือนชัดเจนพร้อมปุ่มสลับไป Seek-based ให้ทันที
+
+เขียน unit test:
+- src/lib/frameCallbackProcessor.test.ts: test supportsVideoFrameCallback() ทั้งกรณี mock ว่ามี/ไม่มี method นี้ใน prototype
+- src/lib/resample.test.ts: test resampleToUniformGrid ด้วยข้อมูล irregular ที่รู้ค่าแน่นอน (เช่น 3 จุดข้อมูลที่ timestamp ไม่เท่ากัน) → ตรวจว่าค่าที่ interpolate มาตรงกับที่คำนวณมือได้ที่ grid point ต่าง ๆ, test edge case ที่ grid point อยู่นอกช่วงข้อมูลจริง (ต้อง clamp ไม่ extrapolate)
+- integration test (ถ้าเป็นไปได้ในสภาพแวดล้อม test ที่มี jsdom/browser mock รองรับ rVFC — ถ้า mock ยากเกินไปให้ข้ามและระบุเหตุผลชัดเจนในโค้ด comment แทนที่จะฝืนเขียนเทสที่ไม่น่าเชื่อถือ): test ว่า processVideoAuto เลือก path ถูกต้องตาม supportsVideoFrameCallback() ที่ mock ไว้
+
+รันเทสด้วย `npm run test` รายงานผล
+
+ทดสอบด้วยมือ (สำคัญมากเพราะเทสอัตโนมัติคุม rVFC จริงไม่ได้): ใช้วิดีโอทดสอบเดียวกัน (จาก Phase 6 synthetic test video) รันทั้งสองโหมด (seek-based กับ frame-callback) เทียบกัน:
+- วัดเวลาที่ใช้จริง (wall-clock) ของแต่ละโหมด รายงาน speedup ratio
+- เทียบค่า hSignificant/periodMeanS ที่ได้จากสองโหมด ต้องใกล้เคียงกัน (error ไม่เกิน 10%) ยืนยันว่า resample ไม่ทำให้ผลเพี้ยน
+- ลองตั้ง playbackRate สูง ๆ (เช่น 16) แล้วสังเกตว่าความหนาแน่นข้อมูลลดลงจริงและผลเริ่มคลาดเคลื่อนมากขึ้นเมื่อไหร่ เพื่อหาค่า playbackRate ที่เหมาะสมกับวิดีโอจริงของคุณ (ความถี่คลื่น 0.4Hz ต้องการ sample rate อย่างน้อย ~10x ของความถี่ คือ 4Hz ขึ้นไปเป็นอย่างต่ำ ควรตั้งเผื่อสูงกว่านั้นมากเพื่อความแม่นยำของ zero up-crossing)
+```
+
+**เกณฑ์ผ่านเฟส:** unit test ที่เทสได้ผ่านหมด, ทดสอบด้วยมือเทียบสองโหมดแล้วผลลัพธ์ใกล้เคียงกัน (พิสูจน์ว่า resample ไม่ทำให้ข้อมูลเพี้ยน) และเห็น speedup จริงจากโหมด frame-callback เมื่อรันบน Chromium — ถ้าไม่รองรับเบราว์เซอร์ที่ทดสอบอยู่ ให้ยืนยันว่า fallback ไป seek-based ทำงานถูกต้องแทน (ฟีเจอร์นี้เป็นส่วนเสริม ไม่บังคับต้องมี ถ้า auto-fallback ทำงานถูกต้องก็ถือว่าผ่านเกณฑ์แล้ว)
+
+---
+
 ## หมายเหตุสำคัญเฉพาะเวอร์ชัน Client-Side
 
 - **ความเร็วในการประมวลผล**: การ seek วิดีโอทีละเฟรมผ่าน `currentTime` มี overhead กว่าการอ่านไฟล์ตรง ๆ แบบ Python/OpenCV พอสมควร วิดีโอยาวหรือ sample rate สูงอาจใช้เวลานานในเบราว์เซอร์ — ถ้าพบว่าช้าเกินไปในทางปฏิบัติ ให้พิจารณาลด sampleRateHz ลง หรือขอ prompt เฟสเสริมสำหรับใช้ `requestVideoFrameCallback` (แม่นยำกว่าและเร็วกว่าการ seek แต่รองรับเฉพาะ Chromium-based browsers)

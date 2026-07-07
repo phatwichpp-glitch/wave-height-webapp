@@ -8,6 +8,8 @@ interface ProcessingControlsProps {
   onDebugModeChange: (value: boolean) => void;
   overlayEveryNFrames: number;
   onOverlayEveryNFramesChange: (value: number) => void;
+  /** Debug mode's artificial per-frame delay only applies to the seek-based processing path — hide the (otherwise dead) control when frame-callback mode is active. Default true. */
+  showDebugMode?: boolean;
 }
 
 export default function ProcessingControls({
@@ -18,6 +20,7 @@ export default function ProcessingControls({
   onDebugModeChange,
   overlayEveryNFrames,
   onOverlayEveryNFramesChange,
+  showDebugMode = true,
 }: ProcessingControlsProps) {
   return (
     <div className="flex flex-wrap items-center gap-4 text-sm">
@@ -30,14 +33,16 @@ export default function ProcessingControls({
         {isPaused ? "Resume" : "Pause"}
       </button>
 
-      <label className="flex items-center gap-2">
-        <input
-          type="checkbox"
-          checked={debugMode}
-          onChange={(event) => onDebugModeChange(event.target.checked)}
-        />
-        Debug mode (slow down to see detail)
-      </label>
+      {showDebugMode && (
+        <label className="flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={debugMode}
+            onChange={(event) => onDebugModeChange(event.target.checked)}
+          />
+          Debug mode (slow down to see detail)
+        </label>
+      )}
 
       <label className="flex items-center gap-2">
         Overlay every

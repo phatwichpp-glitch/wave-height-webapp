@@ -7,7 +7,8 @@ import type {
   RulerCalibration,
   WaveDataPoint,
 } from "@/types/wave";
-import { processVideo, type DetectionResult } from "@/lib/videoProcessor";
+import { processVideoAuto, type DetectionResult, type ProcessingMode } from "@/lib/videoProcessor";
+import { supportsVideoFrameCallback } from "@/lib/frameCallbackProcessor";
 import PointSelector from "@/components/PointSelector";
 import LiveViewerCanvas from "@/components/LiveViewerCanvas";
 import ProcessingControls from "@/components/ProcessingControls";
@@ -33,6 +34,7 @@ const MAX_POINTS = 8;
 const DEBUG_MODE_DELAY_MS = 75;
 const RULER_CHECK_INTERVAL_FRAMES = 10;
 const RULER_MAX_FIT_ERROR_PX = 2.0;
+const DEFAULT_PLAYBACK_RATE = 4;
 // Below this much remaining video after analysisStartTimeS, there may not be
 // enough samples left for a statistically meaningful wave analysis.
 const MIN_RECOMMENDED_REMAINING_S = 5;
@@ -66,6 +68,11 @@ export default function ProcessingPanel({
   const [sampleRateHz, setSampleRateHz] = useState("10");
   const [expectedFrequencyHz, setExpectedFrequencyHz] = useState("");
   const [analysisStartTimeS, setAnalysisStartTimeS] = useState("0");
+  const [processingMode, setProcessingMode] = useState<ProcessingMode>("auto");
+  const [playbackRate, setPlaybackRate] = useState(String(DEFAULT_PLAYBACK_RATE));
+  // Lazy initializer: a pure feature check, safe to run once at mount rather
+  // than re-checking on every render.
+  const [browserSupportsFrameCallback] = useState(() => supportsVideoFrameCallback());
   const [isProcessing, setIsProcessing] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [debugMode, setDebugMode] = useState(false);
@@ -139,6 +146,29 @@ export default function ProcessingPanel({
   const missingBaselines =
     !!rulerCalibration && points.some((point) => point.baselineValueCm === null);
 
+  // What will actually run once "auto" resolves against this browser —
+  // used to decide which mode-specific controls (playbackRate, debug mode)
+  // make sense to show.
+  const effectiveMode: Exclude<ProcessingMode, "auto"> =
+    processingMode === "seek-based"
+      ? "seek-based"
+      : processingMode === "frame-callback"
+        ? "frame-callback"
+        : browserSupportsFrameCallback
+          ? "frame-callback"
+          : "seek-based";
+
+  const parsedPlaybackRate = parseFloat(playbackRate);
+  const hasInvalidPlaybackRate =
+    effectiveMode === "frame-callback" &&
+    (!Number.isFinite(parsedPlaybackRate) || parsedPlaybackRate <= 0);
+
+  // Only blocks start when the user explicitly demands frame-callback on a
+  // browser that can't do it — "auto" already falls back silently for
+  // exactly this reason, so there's nothing to warn about in that case.
+  const showFrameCallbackUnsupportedWarning =
+    processingMode === "frame-callback" && !browserSupportsFrameCallback;
+
   const canStart =
     isMetadataReady &&
     !isProcessing &&
@@ -146,6 +176,8 @@ export default function ProcessingPanel({
     !missingBaselines &&
     !hasInvalidExpectedFrequency &&
     !hasInvalidAnalysisStartTime &&
+    !hasInvalidPlaybackRate &&
+    !showFrameCallbackUnsupportedWarning &&
     Number.isFinite(parsedSampleRate) &&
     parsedSampleRate > 0;
 
@@ -179,18 +211,19 @@ export default function ProcessingPanel({
     setRulerCheckFailures(0);
 
     try {
-      const data = await processVideo(video, canvas, calibration, {
-        points,
+      const data = await processVideoAuto(video, canvas, calibration, points, {
         columnWidth: 3,
         searchMarginPx: 40,
         smoothSigma: 2.0,
         sampleRateHz: parsedSampleRate,
         analysisStartTimeS: parsedAnalysisStartTime,
+        mode: processingMode,
+        playbackRate: effectiveMode === "frame-callback" ? parsedPlaybackRate : undefined,
         onProgress: (percent) => setProgress(percent),
         onFrameProcessed: handleFrameProcessed,
         onRulerCheckFailed: () => setRulerCheckFailures((count) => count + 1),
         isPausedRef,
-        debugDelayMs: debugMode ? DEBUG_MODE_DELAY_MS : undefined,
+        debugDelayMs: debugMode && effectiveMode === "seek-based" ? DEBUG_MODE_DELAY_MS : undefined,
         rulerTracking:
           rulerCalibration && cmPerTick
             ? {
@@ -240,6 +273,25 @@ export default function ProcessingPanel({
         <p className="text-sm text-amber-600">
           Analysis start time must be a number from 0 up to just before the video ends
           {isMetadataReady ? ` (${videoDurationS.toFixed(1)}s)` : ""}.
+        </p>
+      )}
+
+      {hasInvalidPlaybackRate && (
+        <p className="text-sm text-amber-600">Playback rate must be a positive number.</p>
+      )}
+
+      {showFrameCallbackUnsupportedWarning && (
+        <p className="text-sm text-amber-600">
+          This browser doesn&apos;t support the Frame-callback processing mode (Chromium-based
+          browsers only).{" "}
+          <button
+            type="button"
+            onClick={() => setProcessingMode("seek-based")}
+            className="underline hover:no-underline"
+          >
+            Switch to Seek-based
+          </button>
+          .
         </p>
       )}
 
@@ -312,6 +364,36 @@ export default function ProcessingPanel({
           />
         </label>
 
+        <label className="flex flex-col gap-1 text-sm">
+          Processing mode
+          <select
+            value={processingMode}
+            onChange={(event) => setProcessingMode(event.target.value as ProcessingMode)}
+            aria-label="Processing mode"
+            className="w-44 rounded border border-zinc-300 px-2 py-1 dark:border-zinc-700 dark:bg-zinc-900"
+          >
+            <option value="auto">Auto (recommended)</option>
+            <option value="seek-based">Seek-based (all browsers)</option>
+            <option value="frame-callback">Frame-callback (fast, Chromium only)</option>
+          </select>
+        </label>
+
+        {effectiveMode === "frame-callback" && (
+          <label className="flex flex-col gap-1 text-sm">
+            Playback rate
+            <input
+              type="number"
+              min={1}
+              max={16}
+              step="any"
+              value={playbackRate}
+              onChange={(event) => setPlaybackRate(event.target.value)}
+              aria-label="Playback rate"
+              className="w-24 rounded border border-zinc-300 px-2 py-1 dark:border-zinc-700 dark:bg-zinc-900"
+            />
+          </label>
+        )}
+
         <button
           type="button"
           disabled={!canStart}
@@ -326,6 +408,14 @@ export default function ProcessingPanel({
         ระบุวินาทีที่กล้องเริ่มนิ่ง/เข้าตำแหน่งถ่ายจริง ข้อมูลก่อนหน้านี้จะไม่ถูกใช้วิเคราะห์
       </p>
 
+      {effectiveMode === "frame-callback" && (
+        <p className="text-xs text-zinc-500 dark:text-zinc-500">
+          ค่าสูงเกินไปอาจทำให้ browser ข้ามเฟรม ได้ข้อมูลเบาบางเกินไปสำหรับคลื่นความถี่สูง
+          แนะนำเช็คความหนาแน่นข้อมูลที่ได้จริงหลังประมวลผล (ดูจาก confidence/จำนวนจุดข้อมูลต่อวินาที)
+          ถ้าเบาบางเกินไปให้ลด playback rate ลง
+        </p>
+      )}
+
       <ProcessingControls
         isProcessing={isProcessing}
         isPaused={isPaused}
@@ -334,6 +424,7 @@ export default function ProcessingPanel({
         onDebugModeChange={setDebugMode}
         overlayEveryNFrames={overlayEveryNFrames}
         onOverlayEveryNFramesChange={setOverlayEveryNFrames}
+        showDebugMode={effectiveMode === "seek-based"}
       />
 
       {isProcessing && (

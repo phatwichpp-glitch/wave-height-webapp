@@ -3,6 +3,7 @@ import {
   captureFrameAtTime,
   getMultiColumnCropBounds,
   processVideo,
+  processVideoAuto,
 } from "./videoProcessor";
 import { extractColumnProfile, findSurfaceEdge } from "./surfaceDetector";
 import type {
@@ -11,6 +12,18 @@ import type {
   WorkerResponseMessage,
 } from "@/workers/videoProcessing.worker";
 import type { CalibrationData, MeasurementPoint, RulerCalibration } from "@/types/wave";
+
+// Mocked so processVideoAuto's *dispatch* logic can be tested (which path it
+// picks for each mode) without needing a real rVFC-capable environment —
+// frameCallbackProcessor.ts's own logic is tested in its own test file.
+vi.mock("@/lib/frameCallbackProcessor", () => ({
+  supportsVideoFrameCallback: vi.fn(),
+  processVideoWithFrameCallback: vi.fn(),
+}));
+import {
+  supportsVideoFrameCallback as mockSupportsVideoFrameCallback,
+  processVideoWithFrameCallback as mockProcessVideoWithFrameCallback,
+} from "@/lib/frameCallbackProcessor";
 
 type Listener = () => void;
 
@@ -829,5 +842,112 @@ describe("processVideo — analysisStartTimeS (Phase 12)", () => {
     for (const sample of result.p1) {
       expect(Math.abs(sample.elevationCm)).toBeLessThanOrEqual(1);
     }
+  });
+});
+
+describe("processVideoAuto", () => {
+  const calibration: CalibrationData = {
+    point1: { x: 0, y: 0 },
+    point2: { x: 0, y: 100 },
+    knownDistanceCm: 10,
+    pixelsPerCm: 10,
+  };
+  const points: MeasurementPoint[] = [
+    {
+      id: "p1",
+      xColumn: 50,
+      label: "Point 1",
+      color: "#3b82f6",
+      baselineY: 100,
+      baselineValueCm: null,
+      xOffsetCm: 0,
+    },
+  ];
+
+  beforeEach(() => {
+    vi.mocked(mockSupportsVideoFrameCallback).mockReset();
+    vi.mocked(mockProcessVideoWithFrameCallback).mockReset();
+  });
+
+  it("mode='seek-based' always uses seek-based processing, even if frame-callback is supported", async () => {
+    vi.mocked(mockSupportsVideoFrameCallback).mockReturnValue(true);
+    vi.stubGlobal("Worker", MockWorker);
+    const video = createMockVideo({ videoWidth: 100, videoHeight: 200, duration: 1 });
+    const canvas = createMockCanvas(100, 200);
+
+    const result = await processVideoAuto(video, canvas, calibration, points, {
+      columnWidth: 3,
+      searchMarginPx: 40,
+      smoothSigma: 2.0,
+      sampleRateHz: 10,
+      mode: "seek-based",
+    });
+
+    expect(mockProcessVideoWithFrameCallback).not.toHaveBeenCalled();
+    expect(result.p1.length).toBe(10);
+    vi.unstubAllGlobals();
+  });
+
+  it("mode='frame-callback' uses frame-callback processing and resamples its (irregular) output onto sampleRateHz's uniform grid", async () => {
+    vi.mocked(mockProcessVideoWithFrameCallback).mockResolvedValue({
+      p1: [
+        { timeS: 0.0, elevationCm: 0, confidence: 1 },
+        { timeS: 0.37, elevationCm: 5, confidence: 1 },
+        { timeS: 0.9, elevationCm: 0, confidence: 1 },
+      ],
+    });
+    const video = createMockVideo({ videoWidth: 100, videoHeight: 200, duration: 1 });
+    const canvas = createMockCanvas(100, 200);
+
+    const result = await processVideoAuto(video, canvas, calibration, points, {
+      columnWidth: 3,
+      searchMarginPx: 40,
+      smoothSigma: 2.0,
+      sampleRateHz: 10,
+      mode: "frame-callback",
+    });
+
+    expect(mockProcessVideoWithFrameCallback).toHaveBeenCalledTimes(1);
+    // Resampled onto a uniform 10Hz grid over ~1s -> far more than the 3 raw points.
+    expect(result.p1.length).toBeGreaterThan(3);
+    result.p1.forEach((sample, i) => {
+      expect(sample.timeS).toBeCloseTo(i / 10);
+    });
+  });
+
+  it("mode='auto' picks frame-callback when the browser supports it", async () => {
+    vi.mocked(mockSupportsVideoFrameCallback).mockReturnValue(true);
+    vi.mocked(mockProcessVideoWithFrameCallback).mockResolvedValue({ p1: [] });
+    const video = createMockVideo({ videoWidth: 100, videoHeight: 200, duration: 1 });
+    const canvas = createMockCanvas(100, 200);
+
+    await processVideoAuto(video, canvas, calibration, points, {
+      columnWidth: 3,
+      searchMarginPx: 40,
+      smoothSigma: 2.0,
+      sampleRateHz: 10,
+      mode: "auto",
+    });
+
+    expect(mockProcessVideoWithFrameCallback).toHaveBeenCalledTimes(1);
+  });
+
+  it("mode='auto' falls back to seek-based when the browser does not support frame-callback", async () => {
+    vi.mocked(mockSupportsVideoFrameCallback).mockReturnValue(false);
+    vi.stubGlobal("Worker", MockWorker);
+    const video = createMockVideo({ videoWidth: 100, videoHeight: 200, duration: 1 });
+    const canvas = createMockCanvas(100, 200);
+
+    const result = await processVideoAuto(video, canvas, calibration, points, {
+      columnWidth: 3,
+      searchMarginPx: 40,
+      smoothSigma: 2.0,
+      sampleRateHz: 10,
+      mode: "auto",
+    });
+
+    expect(mockProcessVideoWithFrameCallback).not.toHaveBeenCalled();
+    expect(result.p1.length).toBe(10);
+    vi.unstubAllGlobals();
   });
 });
