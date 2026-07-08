@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import BatchPanel from "@/components/BatchPanel";
 
 export default function BatchPage() {
@@ -15,12 +14,6 @@ export default function BatchPage() {
             Process multiple videos sequentially from a JSON config, then download all
             results as one ZIP.
           </p>
-          <Link
-            href="/"
-            className="mt-2 inline-block text-sm text-blue-600 hover:underline dark:text-blue-400"
-          >
-            ← Back to single-video analysis
-          </Link>
         </header>
 
         <BatchPanel />

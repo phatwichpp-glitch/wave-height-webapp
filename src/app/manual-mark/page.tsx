@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import Link from "next/link";
 import type { WaveDataPoint, WaveStatistics } from "@/types/wave";
 import { captureFrameAtTime } from "@/lib/videoProcessor";
 import {
@@ -222,7 +221,6 @@ export default function ManualMarkPage() {
       video.removeEventListener("loadedmetadata", handleLoadedMetadata);
       video.removeEventListener("loadeddata", handleLoadedData);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [videoUrl]);
 
   // Paint the first frame once the canvas has actually mounted. Doing this
@@ -531,9 +529,6 @@ export default function ManualMarkPage() {
             Read a ruler by eye and type values in as you watch the video — completely
             independent of the automatic detection pipeline (no pixel calibration needed).
           </p>
-          <Link href="/" className="mt-2 inline-block text-sm text-blue-600 hover:underline dark:text-blue-400">
-            ← Back to automatic analysis
-          </Link>
         </header>
 
         {/* Hidden video + offscreen capture canvas, shared by every stage. */}

@@ -39,7 +39,7 @@ async function clickAtCanvasPixel(canvas: Locator, targetX: number, targetY: num
 }
 
 test("upload -> calibrate -> process -> results -> CSV download", async ({ page }) => {
-  await page.goto("/");
+  await page.goto("/auto");
 
   // Step 1: upload the synthetic video.
   await page.setInputFiles('input[type="file"]', VIDEO_PATH);
