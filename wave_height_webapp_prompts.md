@@ -1039,6 +1039,152 @@ export class SurfaceTracker {
 
 ---
 
+## Phase 17: Amplitude Bound (Real-time) + Post-hoc Outlier Filter
+
+```
+ทำงานต่อจากโปรเจกต์ wave-height-webapp (ต่อจาก Phase 16 หรือเฟสล่าสุดที่ทำถึง) เพิ่มระบบป้องกัน tracker หลุดล็อกไปติดวัตถุอื่นที่ไม่ใช่ผิวน้ำ (เงาสะท้อน, ขีดไม้บรรทัด, ขอบวัตถุอื่นในเฟรม) ด้วยขอบเขต amplitude ที่เป็นไปได้จริงทางกายภาพ ทำงานสองชั้น: (1) ป้องกัน real-time ระหว่าง tracking ไม่ให้ lastY ขยับไปตำแหน่งที่เกินขอบเขต (2) กรอง statistical outlier หลังเก็บข้อมูลเสร็จแล้วอีกชั้น
+
+ส่วนที่ 1 — แก้ src/lib/surfaceDetector.ts (SurfaceTracker จาก Phase 2/7/16):
+
+แก้ EdgeResult เพิ่ม field:
+  rejected: boolean;   // true ถ้าตำแหน่งที่ตรวจจับได้เฟรมนี้เกินขอบเขตที่กำหนด (ถูกปฏิเสธ ไม่นำไปอัปเดต lastY)
+
+แก้ SurfaceTracker.detect() ให้รับ validate callback เพิ่ม:
+
+detect(
+  imageData: ImageData,
+  validate?: (candidateYPosition: number) => boolean
+): EdgeResult
+- คำนวณ candidate (y, confidence) ตามกระบวนการเดิม (extractColumnProfile + findSurfaceEdge ภายใน searchRange ที่กำหนดจาก lastY หรือ initialSeedY ตาม Phase 16)
+- ถ้ามี validate function และ validate(candidateY) คืนค่า false:
+  - ตั้ง rejected = true ใน EdgeResult
+  - **ไม่อัปเดต this.lastY** (คงค่าตำแหน่งดีล่าสุดไว้เหมือนเดิม ไม่ขยับไปตำแหน่งที่ถูกปฏิเสธ) — นี่คือหัวใจของการป้องกัน เพราะทำให้เฟรมถัดไปยังคงค้นหาใกล้ตำแหน่งที่เชื่อถือได้ล่าสุด ไม่ลอยตามตำแหน่งผิดไปเรื่อย ๆ
+  - คืนค่า yPosition เป็น this.lastY เดิม (หรือ candidateY ถ้ายังไม่เคยมี lastY ที่ถูกต้องมาก่อนเลยตั้งแต่เฟรมแรก — กรณีนี้ให้ log คำเตือนพิเศษเพราะหมายความว่าจุดเริ่มต้นก็มีปัญหาแล้ว)
+- ถ้าไม่มี validate หรือผ่านการ validate: ทำงานตามปกติ (อัปเดต lastY, rejected = false)
+
+ส่วนที่ 2 — แก้ src/workers/videoProcessing.worker.ts (จาก Phase 7/9/16):
+- แก้ message format ที่ส่งเข้า worker ต่อเฟรม ให้มี maxDeviationPx ต่อ point ด้วย (คำนวณจาก maxAmplitudeCm ที่ผู้ใช้ตั้ง คูณ pixelsPerCm ปัจจุบันของเฟรมนั้น จาก RulerCalibrationTracker — สำคัญ: ต้องคำนวณใหม่ทุกครั้งที่ pixelsPerCm เปลี่ยน ไม่ใช่ค่าคงที่ตายตัว เพราะกล้องอาจซูมเข้า-ออกได้ตาม Phase 9)
+- ก่อนเรียก tracker.detect() ให้สร้าง validate closure: (candidateY) => Math.abs(candidateY - currentBaselinePixelY) <= maxDeviationPx แล้วส่งเข้า detect()
+- ส่งค่า rejected กลับไปพร้อมผลลัพธ์อื่น ๆ ต่อเฟรมต่อจุด
+
+ส่วนที่ 3 — แก้ src/lib/videoProcessor.ts:
+- เพิ่ม parameter maxAmplitudeCm ใน ProcessingOptions (optional — ถ้าไม่ระบุ ปิดการป้องกันชั้นนี้ทั้งหมด ทำงานเหมือนเดิมทุกประการ เพื่อไม่ทำลาย backward compatibility)
+- ส่ง maxAmplitudeCm เข้า worker ตามที่ระบุในส่วนที่ 2
+- เก็บค่า rejected ต่อจุดต่อเฟรมไว้ใน WaveDataPoint ด้วย (แก้ interface เพิ่ม field rejected: boolean)
+
+ส่วนที่ 4 — src/lib/outlierFilter.ts (ไฟล์ใหม่) — ชั้นที่ 2 กรอง statistical outlier หลังเก็บข้อมูลเสร็จ:
+
+export interface OutlierFilterOptions {
+  maxAmplitudeCm?: number;        // hard bound เดียวกับที่ใช้ตอน real-time (ใช้ซ้ำเพื่อความสอดคล้อง เผื่อมีจุดที่หลุดรอดมาจากชั้นแรก)
+  medianWindowSize?: number;      // default 5 (ต้องเป็นเลขคี่)
+  outlierThresholdMAD?: number;   // default 4 — ตัวคูณ median absolute deviation ที่ใช้ตัดสินว่าเป็น outlier
+}
+
+export interface OutlierFilterResult {
+  filteredData: WaveDataPoint[];       // ข้อมูลหลังกรอง จุดที่ถูกตัดออกจะถูกแทนด้วยค่า linear interpolation จากจุดดีที่ใกล้ที่สุดสองข้าง
+  rejectedRanges: { startS: number; endS: number }[];  // ช่วงเวลาที่ถูกตัดออก (รวม consecutive rejected points เป็นช่วงเดียวกัน) สำหรับ UI shading
+  rejectedFraction: number;             // 0-1 สัดส่วนข้อมูลที่ถูกตัดทิ้งทั้งหมด
+}
+
+export function applyOutlierFilter(
+  data: WaveDataPoint[],
+  options: OutlierFilterOptions
+): OutlierFilterResult
+ขั้นตอน:
+1. เริ่มจากจุดที่มี rejected: true จาก real-time layer (ชั้นที่ 1) อยู่แล้ว ให้ถือเป็น rejected ทันทีในชั้นนี้ด้วย (ไม่ต้องคำนวณซ้ำ)
+2. ถ้ามี maxAmplitudeCm: mark จุดใดก็ตามที่ |elevationCm| > maxAmplitudeCm เป็น rejected เพิ่มเติม (เผื่อจุดที่หลุดรอดมาจากชั้น real-time ด้วยเหตุผลใดก็ตาม เช่นเปิดใช้ฟีเจอร์นี้ทีหลังกับข้อมูลเก่าที่ประมวลผลไปแล้วโดยยังไม่มีชั้น 1)
+3. คำนวณ rolling median (window = medianWindowSize) ของสัญญาณ, คำนวณ MAD (median absolute deviation) แบบ local รอบแต่ละจุด, mark จุดที่ |value - localMedian| > outlierThresholdMAD * MAD เป็น rejected เพิ่มเติมอีก (จับ noise/spike เล็ก ๆ ที่ยังอยู่ในขอบเขต amplitude แต่ยังผิดปกติทางสถิติ)
+4. รวม index ที่ถูก reject ทั้งหมดจากขั้นตอน 1-3 เป็น consecutive ranges แล้วแปลงเป็น rejectedRanges (startS, endS)
+5. เติมค่าจุดที่ถูก reject ด้วย linear interpolation จากจุดดีที่ใกล้ที่สุดก่อน-หลัง (ถ้า reject อยู่ที่ขอบต้น/ท้ายสัญญาณโดยไม่มีจุดดีอีกฝั่ง ให้ใช้ค่าจุดดีที่ใกล้ที่สุดเพียงฝั่งเดียวแทน ไม่ extrapolate)
+6. คำนวณ rejectedFraction = จำนวนจุดที่ reject ทั้งหมด / จำนวนจุดทั้งหมด
+
+ส่วนที่ 5 — แก้ src/components/ProcessingPanel.tsx:
+- เพิ่ม input "ขอบเขต amplitude สูงสุดที่เป็นไปได้จริง (cm)" (optional, ปิดไว้ default) พร้อม helper text อธิบายว่า "ถ้ารู้ค่าคร่าว ๆ ของคลื่นสูงสุดที่เป็นไปได้จากการตั้งค่าการทดลอง (เช่น amplitude ของ wave generator) ใส่ค่านี้เพื่อป้องกันระบบหลุดไปติดวัตถุอื่นที่ไม่ใช่ผิวน้ำ แนะนำใส่ค่าที่กว้างกว่าคลื่นจริงสัก 2-3 เท่าเผื่อไว้ ไม่ใช่ใส่ค่าตรงเป๊ะ เพราะถ้าแคบไปจะตัดคลื่นสูงจริงทิ้งด้วย"
+
+ส่วนที่ 6 — แก้ src/components/ElevationChart.tsx และ src/components/ResultsSummary.tsx:
+- ใน ElevationChart: แสดง shaded background band สีแดงจาง ๆ ในช่วงเวลาที่อยู่ใน rejectedRanges ของแต่ละจุด (ใช้ recharts ReferenceArea) เพื่อให้เห็นด้วยตาว่าช่วงไหนถูกกรองออกและแทนด้วย interpolation
+- ใน ResultsSummary: เพิ่มคอลัมน์ "% ข้อมูลที่ถูกกรอง" ต่อจุดวัด (จาก rejectedFraction) ถ้าเกิน 30% ให้แสดงคำเตือนสีส้ม/แดงกำกับแถวนั้นว่า "สัดส่วนข้อมูลที่ถูกกรองสูงมาก ผลลัพธ์อาจไม่น่าเชื่อถือ แนะนำถ่ายใหม่ให้กล้องนิ่งขึ้นหรือย้ายจุดวัดให้ห่างจากวัตถุ contrast สูง"
+
+ส่วนที่ 7 — แก้ src/lib/waveStatistics.ts (Phase 4/11) ให้ใช้ filteredData:
+- ก่อนเรียก computeWaveStatistics ให้เรียก applyOutlierFilter ก่อนเสมอ (ถ้าผู้ใช้ตั้งค่า maxAmplitudeCm ไว้) แล้วส่ง filteredData เข้า computeWaveStatistics แทน raw data — สถิติคลื่นทั้งหมด (Hs, Hmax, period ทั้ง zero-crossing และ FFT จาก Phase 11) คำนวณจากข้อมูลที่กรองแล้วเสมอ ไม่ใช่ raw data ดิบ (แต่ raw data ดิบยังคงเก็บไว้ให้ดาวน์โหลดได้ตามเดิมจาก CSV export)
+
+เขียน unit test:
+- src/lib/surfaceDetector.test.ts (แก้เพิ่ม): test ว่า detect() ที่มี validate callback คืนค่า false สำหรับ candidate ที่กำหนด → rejected = true และ lastY ไม่ถูกอัปเดต (เรียก detect() ต่อเนื่องหลายครั้งด้วย candidate ที่ผิดปกติสลับกับปกติ ตรวจว่าตำแหน่งค้นหาเฟรมถัดไปยังอิงจากตำแหน่งดีล่าสุดที่ผ่านการ validate เท่านั้น ไม่ใช่ตำแหน่งที่ถูก reject)
+- src/lib/outlierFilter.test.ts (ไฟล์ใหม่): 
+  - test ว่าจุดที่เกิน maxAmplitudeCm ถูก mark เป็น rejected และถูกแทนด้วย interpolation ถูกต้อง (สร้างสัญญาณ sine wave ปกติ + แทรกจุด spike ผิดปกติ 2-3 จุดที่รู้ตำแหน่งแน่นอน ตรวจว่าหลัง filter แล้วค่าที่จุดนั้นใกล้เคียงค่าที่ควรจะเป็นถ้าไม่มี spike)
+  - test MAD-based detection จับ noise เล็ก ๆ ที่อยู่ในขอบเขต amplitude แต่ผิดปกติทางสถิติได้ถูกต้อง
+  - test rejectedRanges รวม consecutive rejected points เป็นช่วงเดียวกันถูกต้อง (ไม่ใช่แยกเป็นช่วงเล็ก ๆ ทีละจุด)
+  - test edge case: จุด reject อยู่ที่ขอบต้น/ท้ายสัญญาณ (ไม่มีจุดดีอีกฝั่งให้ interpolate) ต้องใช้ค่าจุดดีที่ใกล้สุดฝั่งเดียวแทนไม่ crash
+
+รันเทสด้วย `npm run test` และทดสอบด้วยมือ (`npm run dev`) กับวิดีโอที่เจอปัญหาเดิม (กราฟ 7 จุดที่มีปัญหาหลุดล็อก): ตั้ง maxAmplitudeCm เป็นค่ากว้าง ๆ ที่สมเหตุสมผล (เช่น 2-3cm ถ้ารู้ว่าคลื่นจริงไม่เกิน 0.5cm) รันประมวลผลใหม่ เทียบกราฟก่อน-หลังว่าไม่มี "ขั้นบันได" ค้างนิ่งผิดปกติแบบเดิมอีกต่อไป และดูสัดส่วน % ข้อมูลที่ถูกกรองต่อจุดว่าอยู่ในระดับที่ยอมรับได้หรือควรถ่ายใหม่
+```
+
+**เกณฑ์ผ่านเฟส:** unit test ผ่านทั้งหมด โดยเฉพาะเทสว่า `lastY` ไม่ขยับตามตำแหน่งที่ถูก reject ต้องผ่านชัดเจน (นี่คือกลไกป้องกันหลัก), ทดสอบด้วยมือกับวิดีโอจริงที่เคยมีปัญหาแล้วกราฟต้องไม่มีขั้นบันไดค้างผิดปกติแบบเดิม และเห็น shaded band ตรงตำแหน่งที่ระบบเคยหลุดล็อกชัดเจนสอดคล้องกับที่เคยเห็นปัญหา
+
+---
+
+## Phase 18: เครื่องมือมาร์กมือ (Manual Annotation Tool) — แยกอิสระ เรียบง่ายที่สุด
+
+```
+สร้างหน้าใหม่ในโปรเจกต์ wave-height-webapp ที่มีอยู่แล้ว: src/app/manual-mark/page.tsx
+
+**สำคัญมาก: หน้านี้ต้องแยกอิสระจากระบบ auto detection ทั้งหมด (RulerCalibrationPanel, MeasurementPoint, worker, SurfaceTracker) ห้ามพึ่งพา component หรือ state ของระบบเหล่านั้นเลย** เพราะจุดประสงค์คือเครื่องมือมาร์กด้วยมือที่คนอ่านค่าจากไม้บรรทัดด้วยตาแล้วพิมพ์เอง ไม่ต้องมี pixel calibration ใด ๆ เลย (ตาคนที่อ่านคือตัว calibrate อยู่แล้วในตัว) — อนุญาตให้ reuse ได้เฉพาะฟังก์ชัน pure logic ที่ไม่เกี่ยวกับ pixel/calibration เช่น captureFrameAtTime (จาก Phase 3, ใช้แค่วาดเฟรมเฉย ๆ), computeWaveStatistics และ estimateDominantPeriod (จาก Phase 4/11), waveDataToCSV/downloadCSV (จาก Phase 5)
+
+ส่วนที่ 1 — หน้าตั้งค่าก่อนเริ่มมาร์ก:
+- อัปโหลดวิดีโอ (input file ธรรมดา ไม่ต้องใช้ VideoUploader component เดิมถ้าทำให้ซับซ้อนขึ้น เขียนใหม่แบบง่าย ๆ ในไฟล์นี้เลยก็ได้)
+- video scrubber (เหมือน Phase 12) ให้เลื่อนหาเฟรมที่จะใช้เป็น "เวลา 0" แล้วกดปุ่ม "ตั้งเป็นเวลาเริ่มต้น (t=0)" บันทึกตำแหน่งนี้ไว้เป็น referenceTimeS
+- input "ความถี่คลื่นที่ตั้งไว้ (Hz)" (optional) — ถ้ากรอก ให้คำนวณ suggestedIntervalS = (1/frequency) / 10 แสดงเป็นค่าแนะนำในช่องถัดไปโดยอัตโนมัติ (ผู้ใช้แก้เองได้ถ้าต้องการ)
+- เลือกโหมด step: 
+  (a) "ช่วงเวลาคงที่" — input intervalS (default ใช้ suggestedIntervalS ถ้ามี ไม่งั้น default 0.5)
+  (b) "ทีละเฟรมจริง" — input videoFps (ให้ผู้ใช้กรอกเอง เช่น 30/60 เพราะเบราว์เซอร์ไม่มี API อ่าน fps จริงแม่นยำ) ระบบจะขยับทีละ 1/videoFps วินาที (บอกในคอมเมนต์ว่านี่คือค่าประมาณ ไม่ใช่เฟรมจริงเป๊ะ 100% เพราะข้อจำกัดของ browser API แต่เพียงพอสำหรับงาน manual annotation)
+- ปุ่ม "เริ่มมาร์ก"
+
+ส่วนที่ 2 — หน้าจอมาร์กหลัก (การทำงานต้อง**เร็วที่สุด**เพราะต้องทำซ้ำหลายร้อยครั้ง):
+- canvas แสดงเฟรมปัจจุบัน (วาดด้วย captureFrameAtTime ที่ currentAnnotationTimeS ซึ่งเริ่มจาก referenceTimeS)
+- ตัวเลขเวลาปัจจุบันแสดงใหญ่ชัดเจนเหนือ canvas (เช่น "t = 3.5s")
+- input ตัวเลข (type="number" step="0.01") สำหรับกรอกค่าที่อ่านได้ (cm) — ต้อง autoFocus และ focus กลับทันทีหลังบันทึกค่าทุกครั้ง (ใช้ ref + focus() ใน useEffect หรือหลัง submit)
+- เมื่อกด Enter ในช่อง input: บันทึก { timeS: currentAnnotationTimeS - referenceTimeS, valueCm: ค่าที่กรอก } ต่อท้าย array ผลลัพธ์, เพิ่ม currentAnnotationTimeS ทีละ interval ที่ตั้งไว้ (หรือ 1/videoFps ถ้าโหมดทีละเฟรม), เคลียร์ช่อง input, redraw canvas เฟรมใหม่, focus กลับที่ input ทันที — ทำทั้งหมดนี้ให้เร็วที่สุด ไม่มี delay ที่ไม่จำเป็น (คนต้องพิมพ์ค่าติดกันได้เป็นจังหวะโดยไม่รอ)
+- ปุ่ม/คีย์ลัดเพิ่มเติม: 
+  - "◀ ก่อนหน้า" / "ถัดไป ▶" (หรือ arrow keys) — ขยับเวลาโดยไม่บันทึกค่า สำหรับกรณีอยากดูเฟรมก่อน/หลังก่อนตัดสินใจพิมพ์ค่า
+  - "↩ ย้อนกลับค่าล่าสุด" (undo) — ลบรายการล่าสุดออกจาก array และย้อน currentAnnotationTimeS กลับไปตำแหน่งก่อนหน้า (เผื่อพิมพ์ผิด)
+  - "■ หยุดมาร์ก / ดูผลลัพธ์" — จบการมาร์ก ไปหน้าสรุปผล
+- แสดงตารางรายการที่มาร์กไปแล้วล่าสุด 5-10 รายการด้านข้าง (time, value) ให้คลิกแถวไหนก็ได้เพื่อแก้ไขค่านั้นย้อนหลัง (คลิกแล้ว fill ค่าเดิมลงใน input ให้แก้ แล้วกด Enter บันทึกทับค่าเดิมที่ index นั้น ไม่ใช่เพิ่มรายการใหม่ต่อท้าย)
+- เพิ่มกราฟเล็ก ๆ (recharts LineChart ธรรมดา) แสดงข้อมูลที่มาร์กไปแล้วแบบ real-time เป็น feedback ให้เห็นรูปคลื่นที่กำลังมาร์กอยู่คร่าว ๆ ระหว่างทำ (ไม่ต้องมี feature อะไรซับซ้อน แค่เส้นเดียวพอ)
+
+ส่วนที่ 3 — หน้าสรุปผลลัพธ์ (หลังกด "หยุดมาร์ก"):
+- เรียก computeWaveStatistics (จาก Phase 4/11, reuse โค้ดเดิม) กับข้อมูลที่มาร์กได้ทั้งหมด แสดง nWaves, hMax, hMean, hSignificant, periodMeanS (zero up-crossing)
+- ถ้าข้อมูลมีจุดพอสมควร (เช่น มากกว่า 20 จุด) ให้เรียก estimateDominantPeriod (จาก Phase 11, ต้องประมาณ sampleRateHz ที่มีผลจาก intervalS ที่ใช้ตอนมาร์ก เพราะข้อมูล manual entry อาจไม่ได้ sample สม่ำเสมอเป๊ะถ้าผู้ใช้ใช้ปุ่ม ก่อนหน้า/ถัดไป ปนกับการมาร์กปกติ — ถ้า sample ไม่สม่ำเสมอให้ resampleToUniformGrid ก่อน จาก Phase 14 reuse ได้เลย) แสดง dominantPeriodS จาก FFT ด้วย
+- ถ้ามีการกรอกความถี่ที่ตั้งไว้ตอนต้น: แสดงตาราง "ความถี่ที่ตั้งไว้ vs ความถี่ที่วัดได้ (ทั้งสองวิธี)" พร้อม % ผลต่าง ให้เห็นความแม่นยำทันที
+- กราฟ elevation เต็มรูปแบบ (ใช้ ElevationChart component เดิมจาก Phase 5 ได้เลยถ้า reuse ง่าย เพราะรับแค่ array ธรรมดาไม่ต้องพึ่ง calibration ใด ๆ)
+- ปุ่มดาวน์โหลด CSV (ใช้ waveDataToCSV/downloadCSV เดิมจาก Phase 5) — format เดียวกับ WaveDataPoint (time_s, elevation_cm) เพื่อให้เอาไปเทียบกับผลจากระบบ auto ได้ในอนาคตถ้าต้องการ (ไม่บังคับต้องเทียบตอนนี้)
+- ปุ่ม "มาร์กต่อ" (กลับไปหน้ามาร์กหลัก ทำต่อจากจุดสุดท้าย ไม่รีเซ็ตข้อมูล) เผื่อกดหยุดมาแล้วอยากมาร์กเพิ่ม
+
+ส่วนที่ 4 — เครื่องมือช่วยอ่านค่าให้ง่ายขึ้น (สำคัญสำหรับลด error จากการอ่านค่าผิด):
+
+1. **Zoom/Crop เฉพาะบริเวณไม้บรรทัด** — หลังตั้ง referenceTimeS แล้ว เพิ่มขั้นตอน: ให้ผู้ใช้วาดกรอบสี่เหลี่ยม (drag บน canvas ที่แสดงเฟรมเต็ม) ครอบเฉพาะบริเวณไม้บรรทัด+ผิวน้ำที่จะอ่าน บันทึกเป็น readingROI = {x, y, width, height}
+   - ระหว่างมาร์กหลัก (ส่วนที่ 2) แทนที่จะวาดเฟรมเต็มลง canvas ให้ crop เฉพาะ readingROI แล้ว drawImage ขยาย (scale) ให้เต็มพื้นที่ canvas ที่มีอยู่ (เช่น canvas 600x400 แต่ ROI เล็กกว่ามาก ก็ขยายให้เต็ม) — ทำให้ขีดไม้บรรทัดใหญ่ขึ้นชัดเจน อ่านง่ายขึ้นมาก
+   - เพิ่มปุ่ม "ปรับกรอบใหม่" กลับไปวาดกรอบ ROI ใหม่ได้ระหว่างมาร์ก เผื่อกล้องขยับจนกรอบเดิมไม่ครอบคลุมผิวน้ำแล้ว (ไม่ต้องบ่อย แต่ต้องมีทางออกไว้)
+
+2. **Brightness/Contrast slider** — เพิ่ม 2 slider เหนือ canvas มาร์กหลัก: brightness (ช่วง 50%-200%, default 100%) และ contrast (ช่วง 50%-200%, default 100%) ควบคุมผ่าน CSS filter บน canvas element โดยตรง (style={{ filter: \`brightness(${b}%) contrast(${c}%)\` }}) ปรับแล้วเห็นผลทันทีแบบ real-time ไม่ต้องประมวลผลภาพจริงจัง ใช้ค่าเดียวกันตลอด session (ผู้ใช้ปรับครั้งเดียวตอนเริ่มน่าจะพอ ไม่ต้องเก็บแยกต่อเฟรม)
+
+3. **ปรับความเร็วเล่นวิดีโอ — เฉพาะตอนหาเวลาเริ่มต้นเท่านั้น** (ส่วนที่ 1, ตอน scrub หา referenceTimeS) ไม่ต้องมีในหน้ามาร์กหลัก (ส่วนที่ 2) เพราะ workflow หลักเป็นการ step ทีละจุดอยู่แล้ว ไม่ได้เล่นต่อเนื่อง — เพิ่มปุ่ม/select ความเร็ว (0.5x/1x/2x/4x) ที่ใช้ตอนกดเล่นวิดีโอผ่านคร่าว ๆ ก่อนหาจุดเริ่มต้น (video.playbackRate ธรรมดา)
+
+
+- อัปโหลดวิดีโอ, scrub หาเวลาเริ่มต้น, ตั้งความถี่ที่ทราบ (ถ้ามี), เลือกโหมด step แบบเวลาคงที่, เริ่มมาร์ก
+- วาดกรอบ ROI ครอบไม้บรรทัด ตรวจว่าภาพที่แสดงระหว่างมาร์กเป็นบริเวณที่ครอบไว้ขยายเต็ม canvas จริง ไม่ใช่เฟรมเต็มเหมือนเดิม
+- ลองปรับ brightness/contrast slider ระหว่างมาร์ก ตรวจว่าเห็นผลทันทีบนภาพจริง
+- พิมพ์ค่าติดกัน 10-15 ค่าเร็ว ๆ กด Enter รัว ๆ ตรวจว่า focus ไม่หลุดจาก input เลยสักครั้ง (ถ้า focus หลุดต้องแก้ เพราะทำลาย workflow หลักของเครื่องมือนี้)
+- ทดสอบปุ่ม undo ว่าลบรายการล่าสุดและย้อนเวลาถูกต้อง
+- ทดสอบคลิกแก้ไขรายการเก่าในตาราง ว่าบันทึกทับที่ index เดิมจริง ไม่สร้างรายการซ้ำ
+- กด "หยุดมาร์ก" ดูหน้าสรุปผล ตรวจว่าตัวเลขสถิติสมเหตุสมผล (เทียบด้วยตากับกราฟที่เห็น)
+- ถ้ากรอกความถี่ที่ตั้งไว้ ตรวจว่าตัวเลขเทียบความถี่แสดงผลถูกต้องสมเหตุสมผล
+- ดาวน์โหลด CSV เปิดไฟล์ดูว่า format ถูกต้อง
+```
+
+**เกณฑ์ผ่านเฟส:** ทดสอบด้วยมือครบ checklist ข้างบน โดยเฉพาะ **workflow การพิมพ์ค่าติดกันเร็ว ๆ ต้องลื่นไม่มี focus หลุด** เพราะเป็นหัวใจของเครื่องมือนี้ทั้งหมด — ถ้าตรงนี้ไม่ลื่น เครื่องมือนี้จะช้าพอ ๆ กับไม่มีเลย
+
+---
+
 ## หมายเหตุสำคัญเฉพาะเวอร์ชัน Client-Side
 
 - **ความเร็วในการประมวลผล**: การ seek วิดีโอทีละเฟรมผ่าน `currentTime` มี overhead กว่าการอ่านไฟล์ตรง ๆ แบบ Python/OpenCV พอสมควร วิดีโอยาวหรือ sample rate สูงอาจใช้เวลานานในเบราว์เซอร์ — ถ้าพบว่าช้าเกินไปในทางปฏิบัติ ให้พิจารณาลด sampleRateHz ลง หรือขอ prompt เฟสเสริมสำหรับใช้ `requestVideoFrameCallback` (แม่นยำกว่าและเร็วกว่าการ seek แต่รองรับเฉพาะ Chromium-based browsers)
