@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
 import ResultsSummary from "./ResultsSummary";
 import type { MeasurementPoint, WaveDataPoint, WaveStatistics } from "@/types/wave";
+import { LanguageProvider } from "@/lib/i18n/LanguageProvider";
 
 const mockPoints: MeasurementPoint[] = [
   {
@@ -69,7 +70,8 @@ describe("ResultsSummary", () => {
         points={mockPoints}
         waveData={mockWaveData}
         statsByPoint={mockStatsByPoint}
-      />
+      />,
+      { wrapper: LanguageProvider }
     );
 
     expect(screen.getByText("Upstream")).toBeInTheDocument();
@@ -85,7 +87,8 @@ describe("ResultsSummary", () => {
         points={mockPoints}
         waveData={mockWaveData}
         statsByPoint={{ p1: mockStatsByPoint.p1 }}
-      />
+      />,
+      { wrapper: LanguageProvider }
     );
 
     expect(screen.getByText(/not enough waves detected/i)).toBeInTheDocument();
@@ -97,7 +100,8 @@ describe("ResultsSummary", () => {
         points={mockPoints}
         waveData={mockWaveData}
         statsByPoint={mockStatsByPoint}
-      />
+      />,
+      { wrapper: LanguageProvider }
     );
 
     const combinedCsvButton = screen.getByRole("button", { name: /download raw data/i });

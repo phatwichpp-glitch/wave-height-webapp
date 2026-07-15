@@ -7,6 +7,7 @@ import {
   loadCalibrationFromLocalStorage,
   saveCalibrationToLocalStorage,
 } from "@/lib/calibration";
+import { useLanguage } from "@/lib/i18n/LanguageProvider";
 
 interface CalibrationCanvasProps {
   videoUrl: string;
@@ -24,6 +25,7 @@ export default function CalibrationCanvas({
   videoUrl,
   onCalibrated,
 }: CalibrationCanvasProps) {
+  const { t } = useLanguage();
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const lastTimeUpdateRef = useRef(0);
@@ -262,7 +264,7 @@ export default function CalibrationCanvas({
       />
 
       {!isFrameReady && (
-        <p className="text-sm text-zinc-500">Loading first frame…</p>
+        <p className="text-sm text-zinc-500">{t("common.loadingFirstFrame")}</p>
       )}
 
       {isFrameReady && (
@@ -272,7 +274,7 @@ export default function CalibrationCanvas({
             onClick={handleTogglePlay}
             className="rounded-full border border-zinc-300 px-3 py-1 text-sm hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
           >
-            {isPlaying ? "Pause" : "Play"}
+            {isPlaying ? t("common.pause") : t("common.play")}
           </button>
           <input
             type="range"
@@ -281,18 +283,17 @@ export default function CalibrationCanvas({
             step={0.1}
             value={currentTimeS}
             onChange={handleScrub}
-            aria-label="Video scrubber"
+            aria-label={t("common.videoScrubber")}
             className="flex-1"
           />
           <span className="w-16 shrink-0 text-right text-sm tabular-nums text-zinc-600 dark:text-zinc-400">
-            {currentTimeS.toFixed(1)}s
+            {t("common.timeSuffix", { value: currentTimeS.toFixed(1) })}
           </span>
         </div>
       )}
 
       <p className="text-sm text-zinc-600 dark:text-zinc-400">
-        Scrub to a frame where the camera has settled, then click two points on a
-        reference scale (e.g. a ruler) visible in it. Points selected: {points.length}/2
+        {t("calibrationCanvas.instructions", { count: points.length })}
       </p>
 
       <div className="flex flex-wrap items-center gap-3">
@@ -301,11 +302,11 @@ export default function CalibrationCanvas({
           onClick={handleReset}
           className="rounded-full border border-zinc-300 px-4 py-2 text-sm font-medium hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
         >
-          Reset
+          {t("common.reset")}
         </button>
 
         <label className="flex items-center gap-2 text-sm">
-          Known distance (cm):
+          {t("calibrationCanvas.knownDistance")}
           <input
             type="number"
             min={0}
@@ -322,7 +323,7 @@ export default function CalibrationCanvas({
           onClick={handleConfirm}
           className="rounded-full bg-zinc-900 px-4 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-40 dark:bg-zinc-100 dark:text-zinc-900"
         >
-          Confirm Calibration
+          {t("calibrationCanvas.confirmCalibration")}
         </button>
 
         {savedCalibration && (
@@ -331,7 +332,9 @@ export default function CalibrationCanvas({
             onClick={handleUseSaved}
             className="rounded-full border border-zinc-300 px-4 py-2 text-sm font-medium hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
           >
-            Use saved calibration ({savedCalibration.pixelsPerCm.toFixed(2)} px/cm)
+            {t("calibrationCanvas.useSavedCalibration", {
+              value: savedCalibration.pixelsPerCm.toFixed(2),
+            })}
           </button>
         )}
       </div>

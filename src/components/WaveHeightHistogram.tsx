@@ -12,6 +12,7 @@ import {
   YAxis,
 } from "recharts";
 import type { MeasurementPoint, WaveStatistics } from "@/types/wave";
+import { useLanguage } from "@/lib/i18n/LanguageProvider";
 
 interface WaveHeightHistogramProps {
   points: MeasurementPoint[];
@@ -66,6 +67,7 @@ export default function WaveHeightHistogram({
   statsByPoint,
   binCount = 15,
 }: WaveHeightHistogramProps) {
+  const { t } = useLanguage();
   const [selectedId, setSelectedId] = useState(points[0]?.id ?? "");
   const activeId = statsByPoint[selectedId] ? selectedId : points[0]?.id ?? "";
   const stats = statsByPoint[activeId];
@@ -73,7 +75,7 @@ export default function WaveHeightHistogram({
   if (!stats) {
     return (
       <p className="text-sm text-zinc-500">
-        Not enough waves detected to show a histogram.
+        {t("waveHeightHistogram.notEnoughData")}
       </p>
     );
   }
@@ -109,22 +111,22 @@ export default function WaveHeightHistogram({
             <CartesianGrid strokeDasharray="3 3" stroke="currentColor" opacity={0.15} />
             <XAxis
               dataKey="rangeLabel"
-              label={{ value: "Wave height (cm)", position: "insideBottom", offset: -4 }}
+              label={{ value: t("waveHeightHistogram.heightAxis"), position: "insideBottom", offset: -4 }}
             />
             <YAxis
               allowDecimals={false}
-              label={{ value: "Count", angle: -90, position: "insideLeft" }}
+              label={{ value: t("waveHeightHistogram.countAxis"), angle: -90, position: "insideLeft" }}
             />
             <Tooltip />
             <ReferenceLine
               x={findBinLabelForValue(bins, stats.hMean)}
               stroke="#22c55e"
-              label={{ value: "Mean", position: "top", fill: "#22c55e", fontSize: 11 }}
+              label={{ value: t("waveHeightHistogram.mean"), position: "top", fill: "#22c55e", fontSize: 11 }}
             />
             <ReferenceLine
               x={findBinLabelForValue(bins, stats.hSignificant)}
               stroke="#ef4444"
-              label={{ value: "Hs", position: "top", fill: "#ef4444", fontSize: 11 }}
+              label={{ value: t("waveHeightHistogram.hs"), position: "top", fill: "#ef4444", fontSize: 11 }}
             />
             <Bar dataKey="count" fill="#3b82f6" />
           </BarChart>

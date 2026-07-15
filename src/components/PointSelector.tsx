@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { MeasurementPoint, RulerCalibration } from "@/types/wave";
 import { DEFAULT_INITIAL_SEARCH_MARGIN_PX } from "@/lib/surfaceDetector";
+import { useLanguage } from "@/lib/i18n/LanguageProvider";
 
 interface PointSelectorProps {
   videoUrl: string;
@@ -47,6 +48,7 @@ export default function PointSelector({
   rulerCalibration = null,
   referenceTimeS = null,
 }: PointSelectorProps) {
+  const { t } = useLanguage();
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   // Tracks the last referenceTimeS this component actually seeked to, so a
@@ -307,13 +309,12 @@ export default function PointSelector({
       <video ref={videoRef} key={videoUrl} className="hidden" muted playsInline />
 
       {!isFrameReady && (
-        <p className="text-sm text-zinc-500">Loading first frame…</p>
+        <p className="text-sm text-zinc-500">{t("common.loadingFirstFrame")}</p>
       )}
 
       {isFrameReady && (
         <p className="text-xs text-zinc-500 dark:text-zinc-500">
-          Showing frame at {(referenceTimeS ?? 0).toFixed(1)}s — the same reference frame used
-          for calibration, so measurement points line up with it exactly.
+          {t("pointSelector.showingFrame", { value: (referenceTimeS ?? 0).toFixed(1) })}
         </p>
       )}
 
@@ -325,20 +326,18 @@ export default function PointSelector({
 
       {referenceFrameChanged && (
         <p className="text-sm text-amber-600">
-          The calibration reference frame changed — previous measurement points were cleared
-          since they may no longer match this frame. Please re-add them.
+          {t("pointSelector.referenceFrameChanged")}
         </p>
       )}
 
       <p className="text-sm text-zinc-600 dark:text-zinc-400">
-        Click on the frame to add a measurement point ({points.length}/{maxPoints}).
-        {rulerCalibration &&
-          " Each point also needs its still-water level entered in cm below."}
+        {t("pointSelector.clickToAdd", { count: points.length, max: maxPoints })}
+        {rulerCalibration && t("pointSelector.baselineHint")}
       </p>
 
       {points.length >= maxPoints && (
         <p className="text-sm text-amber-600">
-          Maximum of {maxPoints} measurement points reached. Remove one to add another.
+          {t("pointSelector.maxReached", { max: maxPoints })}
         </p>
       )}
 
@@ -355,12 +354,12 @@ export default function PointSelector({
                 type="text"
                 value={point.label}
                 onChange={(event) => handleLabelChange(point.id, event.target.value)}
-                aria-label={`Label for measurement point at x=${point.xColumn}`}
+                aria-label={t("pointSelector.labelAriaLabel", { x: point.xColumn })}
                 className="flex-1 rounded border border-zinc-300 px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900"
               />
               {rulerCalibration ? (
                 <label className="flex items-center gap-1 text-xs">
-                  Baseline (cm):
+                  {t("pointSelector.baselineLabel")}
                   <input
                     type="number"
                     step="any"
@@ -368,7 +367,7 @@ export default function PointSelector({
                     onChange={(event) =>
                       handleBaselineValueChange(point.id, event.target.value)
                     }
-                    aria-label={`Baseline in cm for ${point.label}`}
+                    aria-label={t("pointSelector.baselineAriaLabel", { label: point.label })}
                     className="w-20 rounded border border-zinc-300 px-2 py-1 dark:border-zinc-700 dark:bg-zinc-900"
                   />
                 </label>
@@ -376,24 +375,24 @@ export default function PointSelector({
                 <span className="text-xs text-zinc-500">x={point.xColumn}px</span>
               )}
               <label className="flex items-center gap-1 text-xs">
-                First-frame search ±px:
+                {t("pointSelector.searchMarginLabel")}
                 <input
                   type="number"
                   min={1}
                   step="1"
                   value={point.initialSearchMarginPx ?? DEFAULT_INITIAL_SEARCH_MARGIN_PX}
                   onChange={(event) => handleSearchMarginChange(point.id, event.target.value)}
-                  aria-label={`First-frame search margin in pixels for ${point.label}`}
+                  aria-label={t("pointSelector.searchMarginAriaLabel", { label: point.label })}
                   className="w-16 rounded border border-zinc-300 px-2 py-1 dark:border-zinc-700 dark:bg-zinc-900"
                 />
               </label>
               <button
                 type="button"
                 onClick={() => handleRemove(point.id)}
-                aria-label={`Remove ${point.label}`}
+                aria-label={t("pointSelector.removeAriaLabel", { label: point.label })}
                 className="rounded-full border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
               >
-                Remove
+                {t("pointSelector.remove")}
               </button>
             </li>
           ))}

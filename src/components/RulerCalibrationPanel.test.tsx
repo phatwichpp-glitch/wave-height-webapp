@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import RulerCalibrationPanel from "./RulerCalibrationPanel";
+import { LanguageProvider } from "@/lib/i18n/LanguageProvider";
 
 function installCanvasStub() {
   const noop = () => {};
@@ -53,7 +54,8 @@ describe("RulerCalibrationPanel", () => {
   it("draws an ROI by dragging, then two tick clicks, and confirms a full calibration", () => {
     const handleCalibrated = vi.fn();
     const { container } = render(
-      <RulerCalibrationPanel videoUrl="blob:test" onCalibrated={handleCalibrated} />
+      <RulerCalibrationPanel videoUrl="blob:test" onCalibrated={handleCalibrated} />,
+      { wrapper: LanguageProvider }
     );
 
     const video = container.querySelector("video") as HTMLVideoElement;
@@ -97,7 +99,8 @@ describe("RulerCalibrationPanel", () => {
   it("keeps confirm disabled until both tick values are filled in", () => {
     const handleCalibrated = vi.fn();
     const { container } = render(
-      <RulerCalibrationPanel videoUrl="blob:test" onCalibrated={handleCalibrated} />
+      <RulerCalibrationPanel videoUrl="blob:test" onCalibrated={handleCalibrated} />,
+      { wrapper: LanguageProvider }
     );
 
     const video = container.querySelector("video") as HTMLVideoElement;
@@ -121,7 +124,8 @@ describe("RulerCalibrationPanel", () => {
   it("scrubbing updates the video's currentTime and redraws the canvas at the new frame (Phase 12)", () => {
     const contextStub = installCanvasStub();
     const { container } = render(
-      <RulerCalibrationPanel videoUrl="blob:test" onCalibrated={vi.fn()} />
+      <RulerCalibrationPanel videoUrl="blob:test" onCalibrated={vi.fn()} />,
+      { wrapper: LanguageProvider }
     );
 
     const video = container.querySelector("video") as HTMLVideoElement;

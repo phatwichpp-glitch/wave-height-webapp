@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import PointSelector from "./PointSelector";
 import type { RulerCalibration } from "@/types/wave";
+import { LanguageProvider } from "@/lib/i18n/LanguageProvider";
 
 // jsdom implements neither real canvas 2D rendering nor real video decoding,
 // so both are stubbed: a no-op 2D context (just enough for drawFirstFrame to
@@ -58,7 +59,8 @@ describe("PointSelector", () => {
   it("adds points on click, up to maxPoints, and reports them via onChange", () => {
     const handleChange = vi.fn();
     const { container } = render(
-      <PointSelector videoUrl="blob:test" onChange={handleChange} maxPoints={2} />
+      <PointSelector videoUrl="blob:test" onChange={handleChange} maxPoints={2} />,
+      { wrapper: LanguageProvider }
     );
 
     const video = container.querySelector("video") as HTMLVideoElement;
@@ -88,7 +90,8 @@ describe("PointSelector", () => {
   it("allows editing a point's label and removing a point", () => {
     const handleChange = vi.fn();
     const { container } = render(
-      <PointSelector videoUrl="blob:test" onChange={handleChange} maxPoints={8} />
+      <PointSelector videoUrl="blob:test" onChange={handleChange} maxPoints={8} />,
+      { wrapper: LanguageProvider }
     );
 
     const video = container.querySelector("video") as HTMLVideoElement;
@@ -121,7 +124,8 @@ describe("PointSelector", () => {
         videoUrl="blob:test"
         onChange={handleChange}
         rulerCalibration={rulerCalibration}
-      />
+      />,
+      { wrapper: LanguageProvider }
     );
 
     const video = container.querySelector("video") as HTMLVideoElement;
@@ -146,7 +150,8 @@ describe("PointSelector", () => {
   it("seeks to referenceTimeS (the calibration frame) instead of always showing t=0 (Phase 15)", () => {
     const handleChange = vi.fn();
     const { container } = render(
-      <PointSelector videoUrl="blob:test" onChange={handleChange} referenceTimeS={12.4} />
+      <PointSelector videoUrl="blob:test" onChange={handleChange} referenceTimeS={12.4} />,
+      { wrapper: LanguageProvider }
     );
 
     const video = container.querySelector("video") as HTMLVideoElement;
@@ -159,7 +164,8 @@ describe("PointSelector", () => {
   it("defaults to t=0 when no referenceTimeS is supplied", () => {
     const handleChange = vi.fn();
     const { container } = render(
-      <PointSelector videoUrl="blob:test" onChange={handleChange} />
+      <PointSelector videoUrl="blob:test" onChange={handleChange} />,
+      { wrapper: LanguageProvider }
     );
 
     const video = container.querySelector("video") as HTMLVideoElement;
@@ -172,7 +178,8 @@ describe("PointSelector", () => {
   it("clears existing points and warns when referenceTimeS changes after points were already added — never silently keeps stale positions (Phase 15 regression)", () => {
     const handleChange = vi.fn();
     const { container, rerender } = render(
-      <PointSelector videoUrl="blob:test" onChange={handleChange} referenceTimeS={5} />
+      <PointSelector videoUrl="blob:test" onChange={handleChange} referenceTimeS={5} />,
+      { wrapper: LanguageProvider }
     );
 
     const video = container.querySelector("video") as HTMLVideoElement;
@@ -203,7 +210,8 @@ describe("PointSelector", () => {
   it("does not warn when referenceTimeS is set for the first time (only a later change should)", () => {
     const handleChange = vi.fn();
     const { container, rerender } = render(
-      <PointSelector videoUrl="blob:test" onChange={handleChange} referenceTimeS={null} />
+      <PointSelector videoUrl="blob:test" onChange={handleChange} referenceTimeS={null} />,
+      { wrapper: LanguageProvider }
     );
 
     const video = container.querySelector("video") as HTMLVideoElement;

@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { RulerCalibration } from "@/types/wave";
+import { useLanguage } from "@/lib/i18n/LanguageProvider";
 
 interface RulerCalibrationPanelProps {
   videoUrl: string;
@@ -21,6 +22,7 @@ export default function RulerCalibrationPanel({
   videoUrl,
   onCalibrated,
 }: RulerCalibrationPanelProps) {
+  const { t } = useLanguage();
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const lastTimeUpdateRef = useRef(0);
@@ -301,7 +303,7 @@ export default function RulerCalibrationPanel({
       <video ref={videoRef} key={videoUrl} className="hidden" muted playsInline />
 
       {!isFrameReady && (
-        <p className="text-sm text-zinc-500">Loading first frame…</p>
+        <p className="text-sm text-zinc-500">{t("common.loadingFirstFrame")}</p>
       )}
 
       {isFrameReady && (
@@ -311,7 +313,7 @@ export default function RulerCalibrationPanel({
             onClick={handleTogglePlay}
             className="rounded-full border border-zinc-300 px-3 py-1 text-sm hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
           >
-            {isPlaying ? "Pause" : "Play"}
+            {isPlaying ? t("common.pause") : t("common.play")}
           </button>
           <input
             type="range"
@@ -320,11 +322,11 @@ export default function RulerCalibrationPanel({
             step={0.1}
             value={currentTimeS}
             onChange={handleScrub}
-            aria-label="Video scrubber"
+            aria-label={t("common.videoScrubber")}
             className="flex-1"
           />
           <span className="w-16 shrink-0 text-right text-sm tabular-nums text-zinc-600 dark:text-zinc-400">
-            {currentTimeS.toFixed(1)}s
+            {t("common.timeSuffix", { value: currentTimeS.toFixed(1) })}
           </span>
         </div>
       )}
@@ -339,12 +341,11 @@ export default function RulerCalibrationPanel({
 
       {!roi ? (
         <p className="text-sm text-zinc-600 dark:text-zinc-400">
-          Drag a box around the ruler in the frame above.
+          {t("rulerCalibration.dragBox")}
         </p>
       ) : (
         <p className="text-sm text-zinc-600 dark:text-zinc-400">
-          Click two tick marks on the ruler inside the box, then enter each one&apos;s
-          real value below. Ticks selected: {tickClicks.length}/2.
+          {t("rulerCalibration.clickTicks", { count: tickClicks.length })}
         </p>
       )}
 
@@ -354,11 +355,11 @@ export default function RulerCalibrationPanel({
           onClick={handleReset}
           className="rounded-full border border-zinc-300 px-4 py-2 text-sm font-medium hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
         >
-          Reset
+          {t("common.reset")}
         </button>
 
         <label className="flex items-center gap-2 text-sm">
-          Spacing between adjacent ticks (cm):
+          {t("rulerCalibration.spacingLabel")}
           <input
             type="number"
             min={0}
@@ -375,14 +376,14 @@ export default function RulerCalibrationPanel({
           {tickClicks.map((tick, index) => (
             <li key={index} className="flex items-center gap-2 text-sm">
               <span>
-                Tick {index + 1} (x={tick.x}, y={tick.y}) real value (cm):
+                {t("rulerCalibration.tickLabel", { index: index + 1, x: tick.x, y: tick.y })}
               </span>
               <input
                 type="number"
                 step="any"
                 value={tick.valueCm}
                 onChange={(event) => handleTickValueChange(index, event.target.value)}
-                aria-label={`Real value in cm for tick ${index + 1}`}
+                aria-label={t("rulerCalibration.tickAriaLabel", { index: index + 1 })}
                 className="w-20 rounded border border-zinc-300 px-2 py-1 dark:border-zinc-700 dark:bg-zinc-900"
               />
             </li>
@@ -396,7 +397,7 @@ export default function RulerCalibrationPanel({
         onClick={handleConfirm}
         className="w-fit rounded-full bg-zinc-900 px-4 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-40 dark:bg-zinc-100 dark:text-zinc-900"
       >
-        Confirm Ruler Calibration
+        {t("rulerCalibration.confirmButton")}
       </button>
     </div>
   );

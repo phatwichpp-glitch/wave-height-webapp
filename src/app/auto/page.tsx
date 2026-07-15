@@ -16,6 +16,7 @@ import ElevationChart from "@/components/ElevationChart";
 import WaveHeightHistogram from "@/components/WaveHeightHistogram";
 import ResultsSummary from "@/components/ResultsSummary";
 import { computeWaveStatistics, estimateDominantPeriod, type SpectralPeriodResult } from "@/lib/waveStatistics";
+import { useLanguage } from "@/lib/i18n/LanguageProvider";
 
 type CalibrationMode = "fixed" | "ruler";
 
@@ -34,6 +35,7 @@ function calibrationFromRuler(ruler: RulerCalibration): CalibrationData {
 }
 
 export default function AutoAnalysisPage() {
+  const { t } = useLanguage();
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [calibrationMode, setCalibrationMode] = useState<CalibrationMode>("fixed");
   const [calibration, setCalibration] = useState<CalibrationData | null>(null);
@@ -154,21 +156,19 @@ export default function AutoAnalysisPage() {
       <main className="flex w-full max-w-3xl flex-col gap-10 px-6 py-16">
         <header>
           <h1 className="text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
-            Auto Detection
+            {t("auto.title")}
           </h1>
-          <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
-            Analyze wave height from a video, entirely in your browser.
-          </p>
+          <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">{t("auto.subtitle")}</p>
         </header>
 
         <section className="flex flex-col gap-3">
-          <StepLabel step={1} title="Upload a video" />
+          <StepLabel step={1} title={t("auto.step1")} />
           <VideoUploader onVideoLoaded={handleVideoLoaded} />
         </section>
 
         {videoUrl && (
           <section className="flex flex-col gap-3">
-            <StepLabel step={2} title="Calibrate against a known distance" />
+            <StepLabel step={2} title={t("auto.step2")} />
 
             <div className="flex gap-2 text-sm">
               <button
@@ -180,7 +180,7 @@ export default function AutoAnalysisPage() {
                     : "border-zinc-300 text-zinc-600 dark:border-zinc-700 dark:text-zinc-400"
                 }`}
               >
-                Fixed camera
+                {t("auto.fixedCamera")}
               </button>
               <button
                 type="button"
@@ -191,7 +191,7 @@ export default function AutoAnalysisPage() {
                     : "border-zinc-300 text-zinc-600 dark:border-zinc-700 dark:text-zinc-400"
                 }`}
               >
-                Handheld / zooming camera
+                {t("auto.handheldCamera")}
               </button>
             </div>
 
@@ -208,7 +208,7 @@ export default function AutoAnalysisPage() {
 
         {videoUrl && calibration && (
           <section className="flex flex-col gap-3">
-            <StepLabel step={3} title="Configure and run processing" />
+            <StepLabel step={3} title={t("auto.step3")} />
             <ProcessingPanel
               videoUrl={videoUrl}
               calibration={calibration}
@@ -222,7 +222,7 @@ export default function AutoAnalysisPage() {
 
         {waveData && (
           <section className="flex flex-col gap-6 rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
-            <StepLabel step={4} title="Results" />
+            <StepLabel step={4} title={t("auto.step4")} />
 
             <ElevationChart data={waveData} points={points} />
 
@@ -230,7 +230,7 @@ export default function AutoAnalysisPage() {
               const point = points.find((p) => p.id === pointId);
               return (
                 <p key={pointId} className="text-sm text-red-600">
-                  {point?.label ?? pointId}: could not compute wave statistics — {message}
+                  {t("auto.statsError", { label: point?.label ?? pointId, message })}
                 </p>
               );
             })}
@@ -245,7 +245,7 @@ export default function AutoAnalysisPage() {
               const point = points.find((p) => p.id === pointId);
               return (
                 <p key={pointId} className="text-sm text-amber-600">
-                  {point?.label ?? pointId}: could not compute an FFT period cross-check — {message}
+                  {t("auto.spectralError", { label: point?.label ?? pointId, message })}
                 </p>
               );
             })}

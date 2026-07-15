@@ -5,6 +5,7 @@ import type { BatchConfig, BatchResult } from "@/types/wave";
 import { processBatch, validateBatchConfig } from "@/lib/batchProcessor";
 import { exportBatchAsZip } from "@/lib/batchExport";
 import { downloadBlob, downloadTextFile } from "@/lib/csvExport";
+import { useLanguage } from "@/lib/i18n/LanguageProvider";
 
 const SAMPLE_CONFIG: BatchConfig = {
   defaultCalibration: {
@@ -34,6 +35,7 @@ const SAMPLE_CONFIG: BatchConfig = {
 };
 
 export default function BatchPanel() {
+  const { t } = useLanguage();
   const [files, setFiles] = useState<File[]>([]);
   const [configText, setConfigText] = useState("");
   const [configError, setConfigError] = useState<string | null>(null);
@@ -119,27 +121,27 @@ export default function BatchPanel() {
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-col gap-2">
-        <label className="text-sm font-medium">Select video files</label>
+        <label className="text-sm font-medium">{t("batchPanel.selectVideoFiles")}</label>
         <input type="file" accept="video/*" multiple onChange={handleFilesChange} />
       </div>
 
       <div className="flex flex-col gap-2">
         <div className="flex items-center justify-between">
-          <label className="text-sm font-medium">Batch config (JSON)</label>
+          <label className="text-sm font-medium">{t("batchPanel.configLabel")}</label>
           <button
             type="button"
             onClick={handleDownloadSampleConfig}
             className="rounded-full border border-zinc-300 px-3 py-1 text-xs hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
           >
-            Download sample config
+            {t("batchPanel.downloadSampleConfig")}
           </button>
         </div>
         <textarea
           value={configText}
           onChange={(event) => handleConfigTextChange(event.target.value)}
           rows={10}
-          placeholder="Paste your batch config JSON here"
-          aria-label="Batch config JSON"
+          placeholder={t("batchPanel.configPlaceholder")}
+          aria-label={t("batchPanel.configAriaLabel")}
           className="w-full rounded border border-zinc-300 p-2 font-mono text-xs dark:border-zinc-700 dark:bg-zinc-900"
         />
         {configError && <p className="text-sm text-red-600">{configError}</p>}
@@ -152,7 +154,7 @@ export default function BatchPanel() {
           onClick={handleStartBatch}
           className="rounded-full bg-zinc-900 px-4 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-40 dark:bg-zinc-100 dark:text-zinc-900"
         >
-          {isRunning ? "Processing…" : "Start Batch Processing"}
+          {isRunning ? t("batchPanel.processing") : t("batchPanel.startProcessing")}
         </button>
         <button
           type="button"
@@ -160,7 +162,7 @@ export default function BatchPanel() {
           onClick={handleDownloadZip}
           className="rounded-full border border-zinc-300 px-4 py-2 text-sm font-medium hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-zinc-700 dark:hover:bg-zinc-800"
         >
-          Download all results (.zip)
+          {t("batchPanel.downloadAllResults")}
         </button>
       </div>
 
@@ -168,9 +170,9 @@ export default function BatchPanel() {
         <table className="w-full border-collapse text-sm">
           <thead>
             <tr className="border-b border-zinc-200 text-left text-xs uppercase tracking-wide text-zinc-500 dark:border-zinc-800">
-              <th className="py-2 pr-4">File</th>
-              <th className="py-2 pr-4">Status</th>
-              <th className="py-2 pr-4">Details</th>
+              <th className="py-2 pr-4">{t("batchPanel.tableFile")}</th>
+              <th className="py-2 pr-4">{t("batchPanel.tableStatus")}</th>
+              <th className="py-2 pr-4">{t("batchPanel.tableDetails")}</th>
             </tr>
           </thead>
           <tbody>
@@ -179,7 +181,7 @@ export default function BatchPanel() {
               return (
                 <tr key={file.name} className="border-b border-zinc-100 dark:border-zinc-900">
                   <td className="py-2 pr-4">{file.name}</td>
-                  <td className="py-2 pr-4">{result?.status ?? "pending"}</td>
+                  <td className="py-2 pr-4">{result?.status ?? t("batchPanel.statusPending")}</td>
                   <td className="py-2 pr-4 text-red-600">
                     {result?.status === "error" ? result.errorMessage : null}
                   </td>

@@ -12,6 +12,7 @@ import { supportsVideoFrameCallback } from "@/lib/frameCallbackProcessor";
 import PointSelector from "@/components/PointSelector";
 import LiveViewerCanvas from "@/components/LiveViewerCanvas";
 import ProcessingControls from "@/components/ProcessingControls";
+import { useLanguage } from "@/lib/i18n/LanguageProvider";
 
 interface ProcessingPanelProps {
   videoUrl: string;
@@ -50,6 +51,7 @@ export default function ProcessingPanel({
   cmPerTick,
   calibrationReferenceTimeS = null,
 }: ProcessingPanelProps) {
+  const { t } = useLanguage();
   // Dedicated hidden video + visible frame canvas for processVideo()'s own
   // captures — separate from PointSelector's own video/canvas used just for
   // the picker UI. The frame canvas is visible (not display:none) so it can
@@ -260,37 +262,37 @@ export default function ProcessingPanel({
 
       {missingBaselines && (
         <p className="text-sm text-amber-600">
-          Every point needs a still-water baseline entered in cm before processing can start.
+          {t("processingPanel.missingBaselines")}
         </p>
       )}
 
       {hasInvalidExpectedFrequency && (
         <p className="text-sm text-amber-600">
-          Expected wave frequency must be a positive number, or left blank.
+          {t("processingPanel.invalidExpectedFrequency")}
         </p>
       )}
 
       {hasInvalidAnalysisStartTime && (
         <p className="text-sm text-amber-600">
-          Analysis start time must be a number from 0 up to just before the video ends
-          {isMetadataReady ? ` (${videoDurationS.toFixed(1)}s)` : ""}.
+          {t("processingPanel.invalidAnalysisStartTime", {
+            durationSuffix: isMetadataReady ? ` (${videoDurationS.toFixed(1)}s)` : "",
+          })}
         </p>
       )}
 
       {hasInvalidPlaybackRate && (
-        <p className="text-sm text-amber-600">Playback rate must be a positive number.</p>
+        <p className="text-sm text-amber-600">{t("processingPanel.invalidPlaybackRate")}</p>
       )}
 
       {showFrameCallbackUnsupportedWarning && (
         <p className="text-sm text-amber-600">
-          This browser doesn&apos;t support the Frame-callback processing mode (Chromium-based
-          browsers only).{" "}
+          {t("processingPanel.frameCallbackUnsupported")}{" "}
           <button
             type="button"
             onClick={() => setProcessingMode("seek-based")}
             className="underline hover:no-underline"
           >
-            Switch to Seek-based
+            {t("processingPanel.switchToSeekBased")}
           </button>
           .
         </p>
@@ -298,14 +300,13 @@ export default function ProcessingPanel({
 
       {showShortRemainingWarning && (
         <p className="text-sm text-amber-600">
-          ช่วงเวลาที่เหลือสำหรับวิเคราะห์สั้นเกินไป อาจไม่พอสำหรับคำนวณสถิติคลื่นที่น่าเชื่อถือ
+          {t("processingPanel.shortRemainingWarning")}
         </p>
       )}
 
       {showCalibrationDriftWarning && (
         <p className="text-sm text-amber-600">
-          แนะนำเลือกเฟรม calibrate ให้ใกล้เคียงกับช่วงเวลาที่จะวิเคราะห์จริง
-          เพื่อความแม่นยำของ ROI ไม้บรรทัด
+          {t("processingPanel.calibrationDriftWarning")}
         </p>
       )}
 
@@ -327,7 +328,7 @@ export default function ProcessingPanel({
 
       <div className="flex flex-wrap items-end gap-3">
         <label className="flex flex-col gap-1 text-sm">
-          Sample rate (Hz)
+          {t("processingPanel.sampleRateLabel")}
           <input
             type="number"
             min={1}
@@ -339,49 +340,49 @@ export default function ProcessingPanel({
         </label>
 
         <label className="flex flex-col gap-1 text-sm">
-          Expected wave frequency (Hz, optional)
+          {t("processingPanel.expectedFrequencyLabel")}
           <input
             type="number"
             min={0}
             step="any"
             value={expectedFrequencyHz}
             onChange={(event) => setExpectedFrequencyHz(event.target.value)}
-            placeholder="e.g. 0.4"
-            aria-label="Expected wave frequency in Hz"
+            placeholder={t("processingPanel.expectedFrequencyPlaceholder")}
+            aria-label={t("processingPanel.expectedFrequencyAriaLabel")}
             className="w-40 rounded border border-zinc-300 px-2 py-1 dark:border-zinc-700 dark:bg-zinc-900"
           />
         </label>
 
         <label className="flex flex-col gap-1 text-sm">
-          Analysis start time (s)
+          {t("processingPanel.analysisStartTimeLabel")}
           <input
             type="number"
             min={0}
             step="any"
             value={analysisStartTimeS}
             onChange={(event) => setAnalysisStartTimeS(event.target.value)}
-            aria-label="Analysis start time in seconds"
+            aria-label={t("processingPanel.analysisStartTimeAriaLabel")}
             className="w-28 rounded border border-zinc-300 px-2 py-1 dark:border-zinc-700 dark:bg-zinc-900"
           />
         </label>
 
         <label className="flex flex-col gap-1 text-sm">
-          Processing mode
+          {t("processingPanel.processingModeLabel")}
           <select
             value={processingMode}
             onChange={(event) => setProcessingMode(event.target.value as ProcessingMode)}
-            aria-label="Processing mode"
+            aria-label={t("processingPanel.processingModeAriaLabel")}
             className="w-44 rounded border border-zinc-300 px-2 py-1 dark:border-zinc-700 dark:bg-zinc-900"
           >
-            <option value="auto">Auto (recommended)</option>
-            <option value="seek-based">Seek-based (all browsers)</option>
-            <option value="frame-callback">Frame-callback (fast, Chromium only)</option>
+            <option value="auto">{t("processingPanel.modeAuto")}</option>
+            <option value="seek-based">{t("processingPanel.modeSeekBased")}</option>
+            <option value="frame-callback">{t("processingPanel.modeFrameCallback")}</option>
           </select>
         </label>
 
         {effectiveMode === "frame-callback" && (
           <label className="flex flex-col gap-1 text-sm">
-            Playback rate
+            {t("processingPanel.playbackRateLabel")}
             <input
               type="number"
               min={1}
@@ -389,7 +390,7 @@ export default function ProcessingPanel({
               step="any"
               value={playbackRate}
               onChange={(event) => setPlaybackRate(event.target.value)}
-              aria-label="Playback rate"
+              aria-label={t("processingPanel.playbackRateAriaLabel")}
               className="w-24 rounded border border-zinc-300 px-2 py-1 dark:border-zinc-700 dark:bg-zinc-900"
             />
           </label>
@@ -401,19 +402,17 @@ export default function ProcessingPanel({
           onClick={handleStart}
           className="rounded-full bg-zinc-900 px-4 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-40 dark:bg-zinc-100 dark:text-zinc-900"
         >
-          {isProcessing ? "Processing…" : "Start Processing"}
+          {isProcessing ? t("processingPanel.processing") : t("processingPanel.startProcessing")}
         </button>
       </div>
 
       <p className="text-xs text-zinc-500 dark:text-zinc-500">
-        ระบุวินาทีที่กล้องเริ่มนิ่ง/เข้าตำแหน่งถ่ายจริง ข้อมูลก่อนหน้านี้จะไม่ถูกใช้วิเคราะห์
+        {t("processingPanel.analysisStartHint")}
       </p>
 
       {effectiveMode === "frame-callback" && (
         <p className="text-xs text-zinc-500 dark:text-zinc-500">
-          ค่าสูงเกินไปอาจทำให้ browser ข้ามเฟรม ได้ข้อมูลเบาบางเกินไปสำหรับคลื่นความถี่สูง
-          แนะนำเช็คความหนาแน่นข้อมูลที่ได้จริงหลังประมวลผล (ดูจาก confidence/จำนวนจุดข้อมูลต่อวินาที)
-          ถ้าเบาบางเกินไปให้ลด playback rate ลง
+          {t("processingPanel.playbackRateHint")}
         </p>
       )}
 
@@ -441,17 +440,20 @@ export default function ProcessingPanel({
 
       {rulerCheckFailures > 0 && (
         <p className="text-sm text-amber-600">
-          Ruler re-calibration was skipped {rulerCheckFailures} time
-          {rulerCheckFailures === 1 ? "" : "s"} (tick fit error too high) — those
-          stretches reused the last good scale, so check that the ruler stayed
-          visible and in focus.
+          {t("processingPanel.rulerSkipped", {
+            count: rulerCheckFailures,
+            plural: rulerCheckFailures === 1 ? "" : "s",
+          })}
         </p>
       )}
 
       {resultCount !== null && !isProcessing && (
         <p className="text-sm text-zinc-600 dark:text-zinc-400">
-          Processed {resultCount} data points across {points.length} measurement point
-          {points.length === 1 ? "" : "s"}.
+          {t("processingPanel.processedSummary", {
+            count: resultCount,
+            pointCount: points.length,
+            plural: points.length === 1 ? "" : "s",
+          })}
         </p>
       )}
     </div>

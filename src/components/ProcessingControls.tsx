@@ -1,5 +1,7 @@
 "use client";
 
+import { useLanguage } from "@/lib/i18n/LanguageProvider";
+
 interface ProcessingControlsProps {
   isProcessing: boolean;
   isPaused: boolean;
@@ -22,6 +24,7 @@ export default function ProcessingControls({
   onOverlayEveryNFramesChange,
   showDebugMode = true,
 }: ProcessingControlsProps) {
+  const { t } = useLanguage();
   return (
     <div className="flex flex-wrap items-center gap-4 text-sm">
       <button
@@ -30,7 +33,7 @@ export default function ProcessingControls({
         onClick={onTogglePause}
         className="rounded-full border border-zinc-300 px-4 py-2 text-sm font-medium hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-zinc-700 dark:hover:bg-zinc-800"
       >
-        {isPaused ? "Resume" : "Pause"}
+        {isPaused ? t("common.resume") : t("common.pause")}
       </button>
 
       {showDebugMode && (
@@ -40,12 +43,12 @@ export default function ProcessingControls({
             checked={debugMode}
             onChange={(event) => onDebugModeChange(event.target.checked)}
           />
-          Debug mode (slow down to see detail)
+          {t("processingControls.debugMode")}
         </label>
       )}
 
       <label className="flex items-center gap-2">
-        Overlay every
+        {t("processingControls.overlayEvery")}
         <input
           type="number"
           min={1}
@@ -55,7 +58,7 @@ export default function ProcessingControls({
           }
           className="w-16 rounded border border-zinc-300 px-2 py-1 dark:border-zinc-700 dark:bg-zinc-900"
         />
-        frame(s)
+        {t("processingControls.frames")}
       </label>
     </div>
   );

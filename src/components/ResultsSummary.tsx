@@ -11,6 +11,7 @@ import {
 import { buildWaveReportText } from "@/lib/reportText";
 import type { SpectralPeriodResult } from "@/lib/waveStatistics";
 import SpectrumChart from "@/components/SpectrumChart";
+import { useLanguage } from "@/lib/i18n/LanguageProvider";
 
 interface ResultsSummaryProps {
   points: MeasurementPoint[];
@@ -38,6 +39,7 @@ export default function ResultsSummary({
   spectralByPoint = {},
   fileNamePrefix = "wave-analysis",
 }: ResultsSummaryProps) {
+  const { t } = useLanguage();
   const [spectrumPointId, setSpectrumPointId] = useState<string | null>(null);
   function handleDownloadCombinedCSV() {
     downloadCSV(
@@ -68,12 +70,12 @@ export default function ResultsSummary({
         <table className="w-full min-w-[680px] border-collapse text-sm">
           <thead>
             <tr className="border-b border-zinc-200 text-left text-xs uppercase tracking-wide text-zinc-500 dark:border-zinc-800">
-              <th className="py-2 pr-4">Point</th>
-              <th className="py-2 pr-4">Hs (cm)</th>
-              <th className="py-2 pr-4">Max (cm)</th>
-              <th className="py-2 pr-4">Mean (cm)</th>
-              <th className="py-2 pr-4">Period — zero up-crossing (s)</th>
-              <th className="py-2 pr-4">Period — FFT (s)</th>
+              <th className="py-2 pr-4">{t("resultsSummary.point")}</th>
+              <th className="py-2 pr-4">{t("resultsSummary.hs")}</th>
+              <th className="py-2 pr-4">{t("resultsSummary.max")}</th>
+              <th className="py-2 pr-4">{t("resultsSummary.mean")}</th>
+              <th className="py-2 pr-4">{t("resultsSummary.periodCrossing")}</th>
+              <th className="py-2 pr-4">{t("resultsSummary.periodFft")}</th>
               <th className="py-2 pr-4" />
             </tr>
           </thead>
@@ -114,7 +116,7 @@ export default function ResultsSummary({
                     </>
                   ) : (
                     <td className="py-2 pr-4 text-zinc-400" colSpan={4}>
-                      Not enough waves detected
+                      {t("resultsSummary.notEnoughWaves")}
                     </td>
                   )}
                   <td className="py-2 pr-4" data-testid={`period-fft-${point.id}`}>
@@ -132,7 +134,7 @@ export default function ResultsSummary({
                       onClick={() => handleDownloadPointCSV(point)}
                       className="rounded-full border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
                     >
-                      CSV
+                      {t("resultsSummary.csv")}
                     </button>
                   </td>
                 </tr>
@@ -154,7 +156,7 @@ export default function ResultsSummary({
         return mismatch > PERIOD_MISMATCH_WARNING_THRESHOLD;
       }) && (
         <p className="rounded border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
-          ค่าคาบจาก 2 วิธีต่างกันมาก อาจมี noise หรือ drift รบกวนสัญญาณอยู่ แนะนำตรวจสอบตำแหน่งจุดวัดหรือลด noise เพิ่มเติม
+          {t("resultsSummary.periodMismatchWarning")}
         </p>
       )}
 
@@ -191,14 +193,14 @@ export default function ResultsSummary({
           onClick={handleDownloadCombinedCSV}
           className="rounded-full bg-zinc-900 px-4 py-2 text-sm font-medium text-white dark:bg-zinc-100 dark:text-zinc-900"
         >
-          Download raw data — all points (CSV)
+          {t("resultsSummary.downloadAllCsv")}
         </button>
         <button
           type="button"
           onClick={handleDownloadReport}
           className="rounded-full border border-zinc-300 px-4 py-2 text-sm font-medium hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
         >
-          Download summary report
+          {t("resultsSummary.downloadReport")}
         </button>
       </div>
     </div>

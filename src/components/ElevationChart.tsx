@@ -13,6 +13,7 @@ import {
   YAxis,
 } from "recharts";
 import type { MeasurementPoint, WaveDataPoint } from "@/types/wave";
+import { useLanguage } from "@/lib/i18n/LanguageProvider";
 
 interface ElevationChartProps {
   data: Record<string, WaveDataPoint[]>;
@@ -38,6 +39,7 @@ function mergeDataForChart(
 }
 
 export default function ElevationChart({ data, points }: ElevationChartProps) {
+  const { t } = useLanguage();
   const [hiddenPointIds, setHiddenPointIds] = useState<Set<string>>(new Set());
   const chartData = mergeDataForChart(data, points);
 
@@ -65,15 +67,15 @@ export default function ElevationChart({ data, points }: ElevationChartProps) {
           <XAxis
             dataKey="timeS"
             tickFormatter={(value: number) => value.toFixed(1)}
-            label={{ value: "Time (s)", position: "insideBottom", offset: -4 }}
+            label={{ value: t("chart.timeAxis"), position: "insideBottom", offset: -4 }}
           />
           <YAxis
-            label={{ value: "Elevation (cm)", angle: -90, position: "insideLeft" }}
+            label={{ value: t("chart.elevationAxis"), angle: -90, position: "insideLeft" }}
           />
           <Tooltip
             formatter={(value) => (typeof value === "number" ? value.toFixed(2) : value)}
             labelFormatter={(label) =>
-              typeof label === "number" ? `t = ${label.toFixed(2)}s` : label
+              typeof label === "number" ? t("chart.tooltipTime", { value: label.toFixed(2) }) : label
             }
           />
           <ReferenceLine y={0} stroke="#9ca3af" strokeDasharray="4 4" />
